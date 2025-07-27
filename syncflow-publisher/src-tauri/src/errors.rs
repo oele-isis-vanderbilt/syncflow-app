@@ -1,5 +1,3 @@
-use crate::models;
-
 #[derive(Debug, thiserror::Error)]
 pub enum SyncFlowPublisherError {
     #[error("{0}")]
@@ -20,7 +18,7 @@ pub enum SyncFlowPublisherError {
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
     Io(String),
-    JSON(String),
+    Json(String),
     ProjectClient(String),
 }
 
@@ -32,7 +30,7 @@ impl serde::Serialize for SyncFlowPublisherError {
         let error_message = self.to_string();
         let error_kind = match self {
             Self::IoError(_) => ErrorKind::Io(error_message),
-            Self::JsonError(_) => ErrorKind::JSON(error_message), // Treat JSON errors as IO for serialization
+            Self::JsonError(_) => ErrorKind::Json(error_message), // Treat JSON errors as IO for serialization
             Self::ProjectClientError(_) => ErrorKind::ProjectClient(error_message),
             Self::NotIntialized(_) => ErrorKind::Io(error_message), // Treat NotIntialized as IO for serialization
         };

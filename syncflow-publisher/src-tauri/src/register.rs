@@ -1,9 +1,8 @@
-use std::f32::consts::E;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::errors::SyncFlowPublisherError;
 use crate::{models, utils as app_utils};
-use serde::{de, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use syncflow_client::{ProjectClient, ProjectClientError};
 use syncflow_shared::device_models::{DeviceRegisterRequest, DeviceResponse};
 use syncflow_shared::user_models::ProjectInfo;
@@ -88,11 +87,13 @@ pub async fn register_to_syncflow(
     let registration_file = app_state.app_dir.join("registration.json");
     std::fs::write(registration_file, serde_json::to_string(&device_response)?)?;
     let registration_response = RegistrationResponse::compose(&device_response, &project_details);
+    let mut registration_guard = app_state.registration.lock().unwrap();
+    *registration_guard = Some(registration_response.clone());
 
     Ok(registration_response)
 }
 
-pub async fn intialize_client(app_dir: &PathBuf) -> Option<ProjectClient> {
+pub async fn intialize_client(app_dir: &Path) -> Option<ProjectClient> {
     let credentials_path = app_dir.join("credentials.json");
     if credentials_path.exists() {
         let credentials_str = std::fs::read_to_string(&credentials_path).ok()?;
@@ -110,15 +111,17 @@ pub async fn intialize_client(app_dir: &PathBuf) -> Option<ProjectClient> {
 
 pub async fn register_if_needed(
     client: &ProjectClient,
-    app_dir: &PathBuf,
+    app_dir: &Path,
 ) -> Option<RegistrationResponse> {
     let registration_file = app_dir.join("registration.json");
+    println!("Registration file path: {:?}", registration_file);
     if registration_file.exists() {
         let registration_str = std::fs::read_to_string(&registration_file).ok()?;
         let mut registration: DeviceResponse = serde_json::from_str(&registration_str).ok()?;
         let project_details = client.get_project_details().await.ok()?;
 
         let registered_device_res = client.get_device(&registration.id).await;
+        println!("Registered device response: {:?}", registered_device_res);
         if let Err(ProjectClientError::ReqwestError(_)) = registered_device_res {
             // Device not found, proceed to register
             // Attempt to register the device again
@@ -130,7 +133,7 @@ pub async fn register_if_needed(
                 })
                 .await
             {
-                registration = new_device.into();
+                registration = new_device;
                 let registration_file = app_dir.join("registration.json");
                 let _ = std::fs::write(
                     registration_file,
@@ -175,18 +178,25 @@ pub async fn delete_registration(
         std::fs::remove_file(registration_file)?;
     }
 
+    println!("Registration deleted successfully.");
+    let mut guard = app_state.client.lock().unwrap();
+    *guard = None;
+
+    let mut registration_guard = app_state.registration.lock().unwrap();
+    *registration_guard = None;
+
     Ok(())
 }
 
 pub async fn deregister_from_syncflow(
     app_state: &tauri::State<'_, models::AppState>,
 ) -> Result<(), SyncFlowPublisherError> {
-    let client = app_state.client.lock().unwrap();
-    let client = client
-        .as_ref()
-        .ok_or(SyncFlowPublisherError::NotIntialized(
-            "Client is not initialized".to_string(),
-        ))?;
+     let client = {
+        let guard = app_state.client.lock().unwrap();
+        guard.clone().ok_or_else(|| {
+            SyncFlowPublisherError::NotIntialized("Client is not initialized".into())
+        })?
+    };
 
     let registration_file = app_state.app_dir.join("registration.json");
     if registration_file.exists() {

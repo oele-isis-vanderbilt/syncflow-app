@@ -9,5 +9,5 @@ use crate::register::RegistrationResponse;
 pub struct AppState {
     pub client: Arc<Mutex<Option<ProjectClient>>>,
     pub app_dir: PathBuf,
-    pub registration: Option<RegistrationResponse>,
+    pub registration: Arc<Mutex<Option<RegistrationResponse>>>,
 }

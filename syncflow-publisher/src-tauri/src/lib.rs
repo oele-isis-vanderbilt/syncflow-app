@@ -32,7 +32,8 @@ fn create_app_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn get_registration(
     app_state: tauri::State<'_, models::AppState>,
 ) -> Result<RegistrationResponse, SyncFlowPublisherError> {
-    if let Some(registration) = &app_state.registration {
+    let registration_guard = app_state.registration.lock().unwrap();
+    if let Some(registration) = &*registration_guard {
         Ok(registration.clone())
     } else {
         Err(SyncFlowPublisherError::NotIntialized(
@@ -55,10 +56,11 @@ pub fn run() {
                 } else {
                     None
                 };
+                println!("Registration: {:?}", registration);
                 let app_state = models::AppState {
                     client: Arc::new(Mutex::new(client)),
                     app_dir,
-                    registration: registration.clone(),
+                    registration: Arc::new(Mutex::new(registration)),
                 };
                 app.manage(app_state);
             });
@@ -74,13 +76,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested { code, api, .. } => {
-                tauri::async_runtime::block_on(async {
-                    let app_state = app_handle.state::<models::AppState>();
-                    let _ = register::deregister_from_syncflow(&app_state).await;
-                });
-            }
-            _ => {}
+        .run(|app_handle, event| if let tauri::RunEvent::ExitRequested {   .. } = event {
+            tauri::async_runtime::block_on(async {
+                let app_state = app_handle.state::<models::AppState>();
+                let _ = register::deregister_from_syncflow(&app_state).await;
+            });
         })
 }
