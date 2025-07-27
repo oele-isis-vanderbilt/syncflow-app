@@ -56,7 +56,6 @@ pub fn run() {
                 } else {
                     None
                 };
-                println!("Registration: {:?}", registration);
                 let app_state = models::AppState {
                     client: Arc::new(Mutex::new(client)),
                     app_dir,
@@ -76,10 +75,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app_handle, event| if let tauri::RunEvent::ExitRequested {   .. } = event {
-            tauri::async_runtime::block_on(async {
-                let app_state = app_handle.state::<models::AppState>();
-                let _ = register::deregister_from_syncflow(&app_state).await;
-            });
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                tauri::async_runtime::block_on(async {
+                    let app_state = app_handle.state::<models::AppState>();
+                    let _ = register::deregister_from_syncflow(&app_state).await;
+                });
+            }
         })
 }
