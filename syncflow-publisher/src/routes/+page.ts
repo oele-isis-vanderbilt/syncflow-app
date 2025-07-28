@@ -1,14 +1,12 @@
-import { goto } from "$app/navigation";
 import { redirect } from "@sveltejs/kit";
 import type { PageLoad } from "./$types";
 import { invoke } from "@tauri-apps/api/core";
-import type { RegistrationResponse } from "$lib/components/types";
+import type { RegistrationResponse, MediaDeviceInfo } from "$lib/components/types";
 
 export const load: PageLoad = async () => {
     try {
         const registration: RegistrationResponse = await invoke("get_registration");
         const devices: MediaDeviceInfo[] = await invoke("get_devices");
-        console.log("Devices loaded:", devices);
         return {
             registration,
             devices    

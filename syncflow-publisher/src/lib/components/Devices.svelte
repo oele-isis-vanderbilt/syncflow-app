@@ -1,9 +1,13 @@
 <script lang="ts">
     import { Button } from "flowbite-svelte";
     import DeviceSelector from "./DeviceSelector.svelte";
-    import type { MediaDeviceInfo } from "./types";
+    import type { MediaDeviceInfo, PublishOptions } from "./types";
 
-    let { devices }: { devices: MediaDeviceInfo[] } = $props();
+    let { devices, onAddDevice, onRemoveDevice }: {
+        devices: MediaDeviceInfo[],
+        onAddDevice: (option: PublishOptions) => void,
+        onRemoveDevice: (id: string) => void,
+    } = $props();
     let minimized = $state(true);
 </script>
 
@@ -34,7 +38,7 @@
     </div>
     {#if !minimized}
         {#each devices as device}
-            <DeviceSelector device={device} />
+            <DeviceSelector device={device} addDevice={onAddDevice} removeDevice={onRemoveDevice}/>
         {/each}
     {/if}
 </div>

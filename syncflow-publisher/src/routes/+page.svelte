@@ -5,12 +5,24 @@
   import { Button } from "flowbite-svelte";
   import type { PageProps } from "./$types";
   import RegistrationDetails from "$lib/components/RegistrationDetails.svelte";
-    import Devices from "$lib/components/Devices.svelte";
+  import Devices from "$lib/components/Devices.svelte";
+  import { selectedDeviceStore } from "$lib/store.svelte";
+    import SelectedDevices from "$lib/components/SelectedDevices.svelte";
 
   let { data }: PageProps = $props();
 
   let registrationDetails = $derived.by(() => data.registration);
   let mediaDevices = $derived.by(() => data.devices || []);
+
+  console.log("Selected devices store:", selectedDeviceStore);
+
+  let { getSelectedDevices, addDevice, removeDevice } = selectedDeviceStore!;
+
+  let selectedDevicesFn = $derived.by(() => {
+    return () => getSelectedDevices();
+  });
+
+  
 
   async function deregister() {
     try {
@@ -58,7 +70,11 @@
     </div>
   {/if}
   {#if mediaDevices.length > 0}
-    <Devices devices={mediaDevices} />
+    <Devices 
+      devices={mediaDevices}
+      onAddDevice={addDevice}
+      onRemoveDevice={removeDevice}
+    />
   {:else}
     <div class="flex flex-col items-center justify-center mt-12">
       <svg
@@ -74,6 +90,28 @@
         /></svg
       >
       <p class="text-lg text-gray-500">No Media Devices Found</p>
+    </div>
+  {/if}
+
+  {#if selectedDevicesFn().length > 0}
+    <SelectedDevices allDevices={mediaDevices} selectedDevicesFn={selectedDevicesFn} />
+  {:else}
+    <div class="flex flex-col items-center justify-center mt-12">
+      <svg
+        class="w-16 h-16 text-gray-300 mb-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        ><path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          d="M12 8v4l3 3m6 0a9 9 0 11-18 0 9 9 0 0118 0z"
+        /></svg
+      >
+      <p class="text-lg text-gray-500">
+        No devices selected for publishing. Please select devices from the list above.
+      </p>
     </div>
   {/if}
 </main>

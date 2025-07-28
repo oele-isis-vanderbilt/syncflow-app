@@ -47,7 +47,7 @@ export interface RegistrationResponse {
 }
 
 export interface LocalFileSaveOptions {
-  outputDir: string; // Note: no camelCase conversion since it's not in the struct
+  outputDir: string;
 }
 
 export interface LocalSaveFileMetadata {

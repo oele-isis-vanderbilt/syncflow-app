@@ -2,7 +2,11 @@
     import type { MediaDeviceInfo, PublishOptions } from "./types";
     import { Select } from "flowbite-svelte";
 
-    let { device }: { device: MediaDeviceInfo } = $props();
+    let { device, addDevice, removeDevice }: { 
+        device: MediaDeviceInfo,
+        addDevice: (option: PublishOptions) => void,
+        removeDevice: (id: string) => void,
+    } = $props();
 
     let publishOptions: PublishOptions[] = $derived.by(() => {
         if (device.deviceClass === "Video/Source") {
@@ -100,6 +104,11 @@
             bind:value={selectedOption}
             class="m-w-64 flex-1"
             items={selectOptions}
+            placeholder="Select Publish Option"
+            clearable
+            onClear={() => {
+                console.log("Selection cleared", selectedOption);
+            }}
         />
     </div>
 </div>
