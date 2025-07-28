@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { MediaDeviceInfo, PublishOptions } from "./types";
-    import { Select } from "flowbite-svelte";
+    import { Button, Select } from "flowbite-svelte";
 
     let { device, addDevice, removeDevice }: { 
         device: MediaDeviceInfo,
@@ -26,20 +26,43 @@
             let options = device.capabilities
                 .filter((capability) => capability.kind === "Audio")
                 .flatMap((capability) =>
-                    capability.framerates.map((framerate) => ({
-                        kind: "Audio",
-                        codec: capability.codec,
-                        device_id: device.devicePath,
-                        channels: capability.channels,
-                        framerate: framerate,
-                    })),
+                    capability.framerates.flatMap((framerate) => {
+                        if (capability.channels <= 2) {
+                            return [{
+                                kind: "Audio",
+                                codec: capability.codec,
+                                device_id: device.devicePath,
+                                channels: capability.channels,
+                                framerate: framerate,
+                            }];
+                        } else {
+                            // For channels ranging from 1...numof channels as well as all channels
+                            let deviceOptions = [{
+                                kind: "Audio",
+                                codec: capability.codec,
+                                device_id: device.devicePath,
+                                channels: capability.channels,
+                                framerate: framerate,
+                            }];
+                            let channelsArray = Array.from({ length: capability.channels }, (_, index) => ({
+                                kind: "Audio",
+                                codec: capability.codec,
+                                device_id: device.devicePath,
+                                channels: capability.channels,
+                                framerate: framerate,
+                                selectedChannel: index + 1,
+                            }));
+                            deviceOptions.push(...channelsArray);
+                            return deviceOptions;
+                        }
+                    })
                 );
 
             let maxFramerate = Math.max(...options.map((opt) => opt.framerate));
             let capsWithMaxFramerate = options.find(
                 (opt) => opt.framerate === maxFramerate,
             );
-            if (maxFramerate > 48000) {
+            if (maxFramerate > 96100) {
                 options.push({
                     kind: "Audio",
                     codec: "audio/x-raw",
@@ -68,6 +91,9 @@
                         height: capability.height,
                         framerate: framerate,
                     }));
+                    if (capability.width > 1920 && capability.height > 1080) {
+
+                    }
                 });
         }
     });
@@ -79,7 +105,8 @@
             return `${option.codec} ${option.width}x${option.height} @ ${option.framerate}fps`;
         }
         if (option.kind === "Audio") {
-            return `${option.codec} ${option.channels}ch @ ${option.framerate}fps`;
+            return option.selectedChannel ? `${option.codec} ${option.channels}ch @ ${option.framerate}Hz @channel${option.selectedChannel}Only` : 
+                `${option.codec} ${option.channels}ch @ ${option.framerate}Hz`;
         }
         if (option.kind === "Screen") {
             return `Screen ${option.width}x${option.height} @ ${option.framerate}fps`;
@@ -93,22 +120,26 @@
             name: optionLabel(option),
         }));
     });
+
+    let selectedVideoOption: PublishOptions | null = $state(null); 
 </script>
 
 <div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100">
-    <div class="flex justify-between items-center gap-2">
+    <div class="flex flex-col justify-between gap-2">
         <h3 class="text-lg font-semibold text-blue-700">
             {device.displayName} ({device.deviceClass})
         </h3>
-        <Select
-            bind:value={selectedOption}
-            class="m-w-64 flex-1"
-            items={selectOptions}
-            placeholder="Select Publish Option"
-            clearable
-            onClear={() => {
-                console.log("Selection cleared", selectedOption);
-            }}
-        />
+        {#if device.deviceClass == "Video/Source"}
+            <Select items={selectOptions} placeholder="Select Resolution" bind:value={selectedVideoOption}/>
+            {#if selectedVideoOption}
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedVideoOption!)}
+                >
+                    Add Video Device
+                </Button>
+            {/if}
+        {/if}
     </div>
 </div>

@@ -40,7 +40,7 @@
                 <path d="M16 10l4 2-4 2v-4z" />
                 <circle cx="8" cy="12" r="1.5" />
             </svg>
-            Media Devices and Codecs
+            Selected Devices and Publish Options
         </h2>
         <Button
             color="purple"
