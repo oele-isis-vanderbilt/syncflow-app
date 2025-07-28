@@ -93,6 +93,7 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
                     props.get::<Option<String>>("api.v4l2.path"),
                     props.get::<Option<String>>("device.string"),
                     props.get::<Option<String>>("device.path"),
+                    props.get::<Option<String>>("api.alsa.path"),
                 ];
 
                 // Return true if any property matches the given path
@@ -177,7 +178,10 @@ fn get_device_path(device: &Device) -> Option<String> {
         props.get::<Option<String>>("api.v4l2.path").ok()?
     } else if device.device_class() == "Audio/Source" || device.device_class() == "Source/Audio" {
         // For audio devices, check for alsa path
-        props.get::<Option<String>>("device.string").ok()?
+        props
+            .get::<Option<String>>("device.string")
+            .or(props.get::<Option<String>>("api.alsa.path"))
+            .ok()?
     } else {
         None
     }
