@@ -1,9 +1,11 @@
-import type { PublishOptions } from "./components/types"
+import type { MediaDeviceInfo, PublishOptions } from "./components/types"
 
 export let selectedDeviceStore: {
     addDevice: (device: PublishOptions) => void;
     removeDevice: (deviceId: string) => void;
     getSelectedDevices: () => PublishOptions[];
+    getSelectedDevicesFn: () => () => PublishOptions[];
+    getFn: () => () => Record<string, PublishOptions>;
 } | null = null;
 
 
@@ -23,7 +25,12 @@ export function initialize() {
         removeDevice: (deviceId: string) => {
             delete selectedDevices[deviceId];
         },
-        getSelectedDevices: () => Object.values(selectedDevices)
-    }
-
+        getSelectedDevices: () => Object.values(selectedDevices),
+        getSelectedDevicesFn: () => {
+            return () => Object.values(selectedDevices);
+        },
+        getFn: () => {
+            return () => selectedDevices
+        }
+    };
 }

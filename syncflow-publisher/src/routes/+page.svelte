@@ -7,19 +7,35 @@
   import RegistrationDetails from "$lib/components/RegistrationDetails.svelte";
   import Devices from "$lib/components/Devices.svelte";
   import { selectedDeviceStore } from "$lib/store.svelte";
-    import SelectedDevices from "$lib/components/SelectedDevices.svelte";
+  import SelectedDevices from "$lib/components/SelectedDevices.svelte";
 
   let { data }: PageProps = $props();
 
   let registrationDetails = $derived.by(() => data.registration);
   let mediaDevices = $derived.by(() => data.devices || []);
 
-  console.log("Selected devices store:", selectedDeviceStore);
 
-  let { getSelectedDevices, addDevice, removeDevice } = selectedDeviceStore!;
+  let { getFn, getSelectedDevicesFn, addDevice, removeDevice } = selectedDeviceStore!;
 
-  let selectedDevicesFn = $derived.by(() => {
-    return () => getSelectedDevices();
+  let selectedDevicesFn = getFn();
+
+  let availableDevicesToSelect = $derived.by(() => {
+    let selectedDevices = Object.values(selectedDevicesFn()).filter(device => device.kind !== "Audio");
+    let d = mediaDevices.filter(
+      device => device.deviceClass !== "Audio/Source"
+    ).filter(device => {
+      if (device.deviceClass != "Audio/Source") {
+        return !selectedDevices.find(selected => {
+          if (selected.kind === "Video") {
+            return device.devicePath == selected.deviceId
+          } else if (selected.kind === "Screen") {
+            return device.devicePath == selected.screenIdOrName
+          }
+        });
+      }
+    });
+    console.log("Available devices to select:", d);
+    return d;
   });
 
   
@@ -71,7 +87,7 @@
   {/if}
   {#if mediaDevices.length > 0}
     <Devices 
-      devices={mediaDevices}
+      devices={availableDevicesToSelect}
       onAddDevice={addDevice}
       onRemoveDevice={removeDevice}
     />
@@ -93,8 +109,8 @@
     </div>
   {/if}
 
-  {#if selectedDevicesFn().length > 0}
-    <SelectedDevices allDevices={mediaDevices} selectedDevicesFn={selectedDevicesFn} />
+  {#if getSelectedDevicesFn()().length > 0}
+    <SelectedDevices allDevices={mediaDevices} selectedDevicesFn={getSelectedDevicesFn()} />
   {:else}
     <div class="flex flex-col items-center justify-center mt-12">
       <svg
