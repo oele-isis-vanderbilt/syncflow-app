@@ -1,3 +1,4 @@
+use crate::alsa_mix_pipeline::UMC1820MixStream;
 use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
@@ -50,6 +51,61 @@ impl LKParticipant {
             room,
             published_tracks: HashMap::new(),
         }
+    }
+
+    pub async fn publish_umc_1820_mix_stream(
+        &mut self,
+        stream: &mut UMC1820MixStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            stream.start().await?;
+        }
+
+        let (frames_rx, close_rx) = stream.subscribe().unwrap();
+        let details = stream.get_details();
+        let track_name = track_name.unwrap_or(stream.get_device_name());
+
+        let rtc_source = NativeAudioSource::new(
+            Default::default(),
+            details.framerate as u32,
+            details.channels as u32,
+            2000,
+        );
+
+        let track = LocalAudioTrack::create_audio_track(
+            &track_name,
+            RtcAudioSource::Native(rtc_source.clone()),
+        );
+
+        let track_sid = random_string("audio-track");
+
+        let task = tokio::spawn(Self::audio_track_task(
+            close_rx,
+            frames_rx,
+            rtc_source.clone(),
+        ));
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Microphone,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.published_tracks.insert(
+            track_sid,
+            TrackHandle {
+                track: LocalTrack::Audio(track),
+                task,
+            },
+        );
+
+        Ok(track_sid)
     }
 
     pub async fn publish_stream(
