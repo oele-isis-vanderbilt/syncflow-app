@@ -16,7 +16,7 @@
         devicePath: string,
     ) {
         const device = allDevices.find((d) => d.devicePath === devicePath);
-        return device ? device.devicePath: "Unknown Device";
+        return device ? device.displayName: "Unknown Device";
     }
 
     $inspect({
@@ -53,12 +53,25 @@
     </div>
     {#if !minimized}
         <div class="space-y-4">
-            {#each selectedDevicesFn() as device}
-                {@const deviceName = device.kind == "Screen" ? getDeviceName(device.screenIdOrName) : getDeviceName(device.device_id)}
+            {#each selectedDevicesFn() as device, index}
+                {@const deviceName = device.kind == "Screen" ? getDeviceName(device.screenIdOrName) : getDeviceName(device.deviceId)}
                 <div class="border border-purple-200 rounded-lg p-4 bg-purple-50">
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="font-semibold text-purple-700">{device.kind}</span>
-                        <span class="text-gray-600">({deviceName})</span>
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="font-semibold text-purple-700">{device.kind}</span>
+                            <span class="text-gray-600">({deviceName})</span>
+                        </div>
+                        <Button
+                            color="red"
+                            outline
+                            size="xs"
+                            onclick={() => {
+                                // Add your delete logic here
+                                console.log('Delete device at index:', index);
+                            }}
+                        >
+                            Delete
+                        </Button>
                     </div>
                     <div class="text-sm text-gray-700">
                         <div>

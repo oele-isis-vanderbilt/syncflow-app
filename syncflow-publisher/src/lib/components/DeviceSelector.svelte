@@ -16,7 +16,7 @@
                     capability.framerates.map((framerate) => ({
                         kind: "Video",
                         codec: capability.codec,
-                        device_id: device.devicePath,
+                        deviceId: device.devicePath,
                         width: capability.width,
                         height: capability.height,
                         framerate: framerate,
@@ -31,7 +31,7 @@
                             return [{
                                 kind: "Audio",
                                 codec: capability.codec,
-                                device_id: device.devicePath,
+                                deviceId: device.devicePath,
                                 channels: capability.channels,
                                 framerate: framerate,
                             }];
@@ -40,14 +40,14 @@
                             let deviceOptions = [{
                                 kind: "Audio",
                                 codec: capability.codec,
-                                device_id: device.devicePath,
+                                deviceId: device.devicePath,
                                 channels: capability.channels,
                                 framerate: framerate,
                             }];
                             let channelsArray = Array.from({ length: capability.channels }, (_, index) => ({
                                 kind: "Audio",
                                 codec: capability.codec,
-                                device_id: device.devicePath,
+                                deviceId: device.devicePath,
                                 channels: capability.channels,
                                 framerate: framerate,
                                 selectedChannel: index + 1,
@@ -66,14 +66,14 @@
                 options.push({
                     kind: "Audio",
                     codec: "audio/x-raw",
-                    device_id: device.devicePath,
+                    deviceId: device.devicePath,
                     channels: capsWithMaxFramerate?.channels || 1,
                     framerate: 48000,
                 });
                 options.push({
                     kind: "Audio",
                     codec: "audio/x-raw",
-                    device_id: device.devicePath,
+                    deviceId: device.devicePath,
                     channels: capsWithMaxFramerate?.channels || 1,
                     framerate: 44100,
                 });
@@ -86,14 +86,11 @@
                 .flatMap((capability) => {
                     return capability.framerates.map((framerate) => ({
                         kind: "Screen",
-                        device_id: device.devicePath,
+                        deviceId: device.devicePath,
                         width: capability.width,
                         height: capability.height,
                         framerate: framerate,
                     }));
-                    if (capability.width > 1920 && capability.height > 1080) {
-
-                    }
                 });
         }
     });
@@ -130,7 +127,7 @@
             {device.displayName} ({device.deviceClass})
         </h3>
         {#if device.deviceClass == "Video/Source"}
-            <Select items={selectOptions} placeholder="Select Resolution" bind:value={selectedVideoOption}/>
+            <Select items={selectOptions} placeholder="Select Resolution and Codecs" bind:value={selectedVideoOption}/>
             {#if selectedVideoOption}
                 <Button
                     color="blue"
@@ -138,6 +135,30 @@
                     onclick={() => addDevice(selectedVideoOption!)}
                 >
                     Add Video Device
+                </Button>
+            {/if}
+        {/if}
+        {#if device.deviceClass == "Audio/Source"}
+            <Select items={selectOptions} placeholder="Select Audio Options" bind:value={selectedOption}/>
+            {#if selectedOption}
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedOption!)}
+                >
+                    Add Audio Device
+                </Button>
+            {/if}
+        {/if}
+        {#if device.deviceClass == "Screen/Source"}
+            <Select items={selectOptions} placeholder="Select Screen Options" bind:value={selectedOption}/>
+            {#if selectedOption}
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedOption!)}
+                >
+                    Add Screen Device
                 </Button>
             {/if}
         {/if}
