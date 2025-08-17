@@ -4,6 +4,12 @@ mod linux;
 #[cfg(target_os = "windows")]
 mod win;
 
+#[cfg(target_os = "macos")]
+mod mac;
+
+#[cfg(target_os = "macos")]
+pub use mac::{get_device_capabilities, get_devices_info, get_gst_device, get_monitor};
+
 #[cfg(target_os = "linux")]
 pub use linux::{get_device_capabilities, get_devices_info, get_gst_device, get_monitor};
 

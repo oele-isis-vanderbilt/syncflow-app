@@ -12,7 +12,12 @@ use crate::utils::random_string;
 use crate::utils::system_time_nanos;
 use crate::{get_gst_device, get_monitor};
 
+#[cfg(target_os = "macos")]
+const SUPPORTED_VIDEO_CODECS: [&str; 3] = ["video/x-h264", "image/jpeg", "video/x-raw"];
+
+#[cfg(not(target_os = "macos"))]
 const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
+
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
 const VIDEO_FRAME_FORMAT: &str = "I420";
 
@@ -239,6 +244,15 @@ impl GstMediaDevice {
                 get_monitor(screen_id_or_name)
                     .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?
             }
+            #[cfg(target_os = "macos")]
+            {
+                get_monitor(screen_id_or_name).ok_or_else(|| {
+                    GStreamerError::DeviceError(format!(
+                        "Screen with ID or name '{}' not found",
+                        screen_id_or_name
+                    ))
+                })?
+            }
         };
 
         let device = GstMediaDevice {
@@ -262,6 +276,11 @@ impl GstMediaDevice {
             }
 
             #[cfg(target_os = "linux")]
+            {
+                return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
+            }
+
+            #[cfg(target_os = "macos")]
             {
                 return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
             }
@@ -753,7 +772,11 @@ impl GstMediaDevice {
                 _ => None,
             })
             .collect::<Vec<_>>();
-
+        println!("Screen share capabilities: {:?}", caps);
+        println!(
+            "Checking codec: {}, width: {}, height: {}, framerate: {}",
+            codec, width, height, framerate
+        );
         caps.iter().any(|c| {
             c.codec == codec
                 && c.width >= width
@@ -762,7 +785,6 @@ impl GstMediaDevice {
         })
     }
 
-    //FixMe: This Pipeline doesn't work for all devices
     fn video_xraw_pipeline(
         &self,
         width: i32,
@@ -771,13 +793,8 @@ impl GstMediaDevice {
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
         filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
-        if filename.is_some() {
-            return Err(GStreamerError::PipelineError(
-                "Filename not supported for xraw pipeline".to_string(),
-            ));
-        }
-
         let input = self.get_video_element()?;
+
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .name(random_string("capsfilter"))
             .build()
@@ -792,17 +809,84 @@ impl GstMediaDevice {
             .build();
         caps_element.set_property("caps", caps);
 
+        let convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
 
-        let sink = self.broadcast_appsink(tx, Some(&i420_caps))?;
+        let caps_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_filter.set_property("caps", &i420_caps);
+
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
+        let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-xraw"));
+
         pipeline
-            .add_many([&input, &caps_element, sink.upcast_ref()])
-            .unwrap();
-        gstreamer::Element::link_many([&input, &caps_element, sink.upcast_ref()]).unwrap();
+            .add_many([
+                &input,
+                &convert,
+                &caps_element,
+                &caps_filter,
+                &tee,
+                &queue_appsink,
+                appsink.upcast_ref(),
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
+            })?;
+
+        gstreamer::Element::link_many([&input, &convert, &caps_element, &caps_filter, &tee])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
+
+        gstreamer::Element::link_many([&queue_appsink, appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        if let Some(ref path) = filename {
+            self.add_video_file_branch(&pipeline, &tee, path)?;
+        }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
 
         Ok(pipeline)
     }
@@ -1004,6 +1088,35 @@ impl GstMediaDevice {
                 "dx9screencapsrc not found".to_string(),
             ))
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        let monitor = get_monitor(&self.device_path).ok_or_else(|| {
+            GStreamerError::DeviceError(format!("No screen found {}", self.device_path))
+        })?;
+
+        let element = gstreamer::ElementFactory::make("avfvideosrc")
+            .name(random_string("screen-source"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create osxvideosrc".to_string())
+            })?;
+
+        if let Some(MediaCapability::Screen(cap)) = monitor.capabilities.first() {
+            element.set_property("capture-screen", true);
+            element.set_property("capture-screen-cursor", true);
+            element.set_property("screen-crop-x", cap.startx as u32);
+            element.set_property("screen-crop-y", cap.starty as u32);
+            element.set_property("screen-crop-width", cap.endx as u32 - cap.startx as u32);
+            element.set_property("screen-crop-height", cap.endy as u32 - cap.starty as u32);
+        } else {
+            return Err(GStreamerError::PipelineError(
+                "No screen capability found".to_string(),
+            ));
+        }
+
+        Ok(element)
     }
 
     #[cfg(target_os = "linux")]

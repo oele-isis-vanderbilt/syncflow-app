@@ -11,18 +11,23 @@ async fn main() -> Result<(), GStreamerError> {
     dotenv().ok();
     // Initialize gstreamer
     gstreamer::init().unwrap();
-    if !(cfg!(any(target_os = "linux", target_os = "windows"))) {
-        panic!("This example is only supported on Linux and Windows");
-    }
-    let mut stream = if cfg!(target_os = "linux") {
+    let mut stream = if cfg!(any(target_os = "linux", target_os = "macos")) {
         // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
         // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
         GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
-            codec: "image/jpeg".to_string(),
+            codec: if cfg!(target_os = "macos") {
+                "video/x-raw".to_string()
+            } else {
+                "image/jpeg".to_string()
+            },
             width: 1920,
             height: 1080,
             framerate: 30,
-            device_id: "/dev/video0".to_string(),
+            device_id: if cfg!(target_os = "macos") {
+                "0x11000000c45636b".to_string()
+            } else {
+                "/dev/video0".to_string()
+            },
             local_file_save_options: Some(LocalFileSaveOptions {
                 output_dir: "recordings".to_string(),
             }),
