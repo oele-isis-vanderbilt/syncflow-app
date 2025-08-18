@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/state';
+    import { page } from '$app/state';
 </script>
 
 <main class="container mx-auto flex flex-col w-full justify-start p-2 gap-4">

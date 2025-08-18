@@ -20,11 +20,13 @@ struct StreamHandle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalFileSaveOptions {
     pub output_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSaveFileMetadata {
     pub file_name: String,
     pub codec: String,
@@ -32,6 +34,7 @@ pub struct LocalSaveFileMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VideoPublishOptions {
     pub codec: String,
     pub device_id: String,
@@ -42,6 +45,7 @@ pub struct VideoPublishOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioPublishOptions {
     pub codec: String,
     pub device_id: String,
@@ -52,6 +56,7 @@ pub struct AudioPublishOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScreenPublishOptions {
     pub codec: String,
     pub screen_id_or_name: String,
@@ -62,6 +67,7 @@ pub struct ScreenPublishOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum PublishOptions {
     Video(VideoPublishOptions),
     Audio(AudioPublishOptions),

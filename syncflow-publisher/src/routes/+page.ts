@@ -1,17 +1,18 @@
-import { goto } from "$app/navigation";
-import { redirect } from "@sveltejs/kit";
-import type { PageLoad } from "./$types";
-import { invoke } from "@tauri-apps/api/core";
+import { redirect } from '@sveltejs/kit';
+import type { PageLoad } from './$types';
+import { invoke } from '@tauri-apps/api/core';
+import type { RegistrationResponse, MediaDeviceInfo } from '$lib/components/types';
 
 export const load: PageLoad = async () => {
     try {
-        const registration = await invoke("get_registration");
+        const registration: RegistrationResponse = await invoke('get_registration');
+        const devices: MediaDeviceInfo[] = await invoke('get_devices');
         return {
-            registration    
+            registration,
+            devices,
         };
     } catch (error) {
-        console.log("No registration found, redirecting to register page.", error);
-        redirect(302, "/register");
+        console.log('No registration found, redirecting to register page.', error);
+        redirect(302, '/register');
     }
-
-}
+};

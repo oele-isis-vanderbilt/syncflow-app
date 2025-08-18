@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+build/
+dist/
+.svelte-kit/
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Generated files
+.DS_Store
+*.log
+pnpm-lock.yaml
+
+# Other
+.env
+.env.*
+!.env.example
+
+# Tauri
+src-tauri
