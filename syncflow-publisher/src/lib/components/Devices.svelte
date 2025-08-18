@@ -1,14 +1,18 @@
 <script lang="ts">
-    import { Button } from "flowbite-svelte";
-    import DeviceSelector from "./DeviceSelector.svelte";
-    import type { MediaDeviceInfo, PublishOptions } from "./types";
+    import { Button } from 'flowbite-svelte';
+    import DeviceSelector from './DeviceSelector.svelte';
+    import type { MediaDeviceInfo, PublishOptions } from './types';
 
-    let { devices, onAddDevice, onRemoveDevice }: {
-        devices: MediaDeviceInfo[],
-        onAddDevice: (option: PublishOptions) => void,
-        onRemoveDevice: (id: string) => void,
+    let {
+        devices,
+        onAddDevice,
+        onRemoveDevice,
+    }: {
+        devices: MediaDeviceInfo[];
+        onAddDevice: (option: PublishOptions) => void;
+        onRemoveDevice: (id: string) => void;
     } = $props();
-    let minimized = $state(true);
+    let minimized = $state(false);
 </script>
 
 <div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100">
@@ -27,18 +31,13 @@
             </svg>
             Media Devices and Codecs
         </h2>
-        <Button
-            color="purple"
-            outline
-            class="ml-2"
-            onclick={() => (minimized = !minimized)}
-        >
-            {minimized ? "Show" : "Minimize"}
+        <Button color="purple" outline class="ml-2" onclick={() => (minimized = !minimized)}>
+            {minimized ? 'Show' : 'Minimize'}
         </Button>
     </div>
     {#if !minimized}
         {#each devices as device, index (index)}
-            <DeviceSelector device={device} addDevice={onAddDevice} removeDevice={onRemoveDevice}/>
+            <DeviceSelector {device} addDevice={onAddDevice} removeDevice={onRemoveDevice} />
         {/each}
     {/if}
 </div>

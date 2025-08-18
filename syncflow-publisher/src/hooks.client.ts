@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export const init: ClientInit = async () => {
     const { initialize } = await import('$lib/store.svelte');
-    console.log("Initializing selectedDeviceStore");
+    console.log('Initializing selectedDeviceStore');
     const devices: MediaDeviceInfo[] = await invoke('get_devices');
-    initialize(devices);   
-}
+    initialize(devices);
+};

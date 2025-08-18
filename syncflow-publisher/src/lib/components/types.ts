@@ -35,55 +35,55 @@ export type MediaCapability =
     | ({ kind: 'Screen' } & ScreenCapability);
 
 export interface RegistrationResponse {
-  deviceId: string;
-  deviceName: string;
-  deviceGroup: string;
-  projectName: string;
-  projectId: string;
-  projectComments: string;
-  lkServerUrl: string;
-  s3BucketName: string;
-  s3Endpoint: string;
+    deviceId: string;
+    deviceName: string;
+    deviceGroup: string;
+    projectName: string;
+    projectId: string;
+    projectComments: string;
+    lkServerUrl: string;
+    s3BucketName: string;
+    s3Endpoint: string;
 }
 
 export interface LocalFileSaveOptions {
-  outputDir: string;
+    outputDir: string;
 }
 
 export interface LocalSaveFileMetadata {
-  fileName: string;
-  codec: string;
-  startedAt: string;
+    fileName: string;
+    codec: string;
+    startedAt: string;
 }
 
 export interface VideoPublishOptions {
-  codec: string;
-  deviceId: string;
-  width: number;
-  height: number;
-  framerate: number;
-  localFileSaveOptions?: LocalFileSaveOptions;
+    codec: string;
+    deviceId: string;
+    width: number;
+    height: number;
+    framerate: number;
+    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface AudioPublishOptions {
-  codec: string;
-  deviceId: string;
-  framerate: number;
-  channels: number;
-  selectedChannel?: number;
-  localFileSaveOptions?: LocalFileSaveOptions;
+    codec: string;
+    deviceId: string;
+    framerate: number;
+    channels: number;
+    selectedChannel?: number;
+    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface ScreenPublishOptions {
-  codec: string;
-  screenIdOrName: string;
-  width: number;
-  height: number;
-  framerate: number;
-  localFileSaveOptions?: LocalFileSaveOptions;
+    codec: string;
+    screenIdOrName: string;
+    width: number;
+    height: number;
+    framerate: number;
+    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
-export type PublishOptions = 
-  | ({ kind: 'Video' } & VideoPublishOptions)
-  | ({ kind: 'Audio' } & AudioPublishOptions)
-  | ({ kind: 'Screen' } & ScreenPublishOptions);
+export type PublishOptions =
+    | ({ kind: 'Video' } & VideoPublishOptions)
+    | ({ kind: 'Audio' } & AudioPublishOptions)
+    | ({ kind: 'Screen' } & ScreenPublishOptions);
