@@ -12,9 +12,6 @@ async fn main() -> Result<(), GStreamerError> {
         GStreamerError::PipelineError(format!("Failed to initialize gstreamer: {}", e))
     })?;
 
-    if !(cfg!(any(target_os = "linux", target_os = "windows"))) {
-        panic!("This example is only supported on Linux and Windows");
-    }
     let mut audio_stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
@@ -26,7 +23,7 @@ async fn main() -> Result<(), GStreamerError> {
                 output_dir: "recordings".to_string(),
             }),
         }))
-    } else {
+    } else if cfg!(target_os = "windows") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
             framerate: 48000,
@@ -36,6 +33,18 @@ async fn main() -> Result<(), GStreamerError> {
             }),
             channels: 2,
             selected_channel: None
+        }))
+    } else {
+        GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
+            codec: "audio/x-raw".to_string(),
+            device_id: "AppleUSBAudioEngine:Unknown Manufacturer:onn. Microphone:1100000:2"
+                .to_string(),
+            framerate: 48000,
+            channels: 1,
+            selected_channel: None,
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
         }))
     };
 
@@ -52,13 +61,24 @@ async fn main() -> Result<(), GStreamerError> {
                 output_dir: "recordings".to_string(),
             }),
         }))
-    } else {
+    } else if cfg!(target_os = "windows") {
         GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
             codec: "image/jpeg".to_string(),
             width: 1280,
             height: 720,
             framerate: 30,
             device_id: r"\\?\usb#vid_0c45&pid_6a10&mi_00#6&303dd63&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    } else {
+        GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
+            codec: "video/x-raw".to_string(),
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            device_id: "0x1000000c45636b".to_string(),
             local_file_save_options: Some(LocalFileSaveOptions {
                 output_dir: "recordings".to_string(),
             }),

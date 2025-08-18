@@ -12,7 +12,9 @@ pub fn get_devices() -> Vec<MediaDeviceInfo> {
                     .capabilities
                     .into_iter()
                     .filter(|cap| match cap {
-                        MediaCapability::Video(video_cap) => video_cap.codec == "image/jpeg",
+                        MediaCapability::Video(video_cap) => {
+                            video_cap.codec == "image/jpeg" || video_cap.codec == "video/x-raw"
+                        }
                         _ => false,
                     })
                     .collect();
