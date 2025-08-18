@@ -36,7 +36,7 @@
         </Button>
     </div>
     {#if !minimized}
-        {#each devices as device, index (index)}
+        {#each devices as device, index (device.devicePath)}
             <DeviceSelector {device} addDevice={onAddDevice} removeDevice={onRemoveDevice} />
         {/each}
     {/if}

@@ -4,12 +4,14 @@
 
     let {
         selectedDevicesFn,
+        streamingConfigFn,
         allDevices,
         onRemoveDevice,
     }: {
         selectedDevicesFn: () => PublishOptions[];
         allDevices: MediaDeviceInfo[];
         onRemoveDevice: (deviceId: string) => void;
+        streamingConfigFn: () => Record<string, boolean>;
     } = $props();
 
     let minimized = $state(false);
@@ -20,14 +22,16 @@
         return device ? device.displayName : 'Unknown Device';
     }
 
-    $inspect({
-        selectedDevicesFn,
-        allDevices,
+    let streamingEnabled = $derived.by(() => {
+        const streamingConfigs = streamingConfigFn();
+        return streamingConfigs;
     });
 </script>
 
-<div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100 w-full">
-    <div class="flex justify-between items-center mb-6">
+<div
+    class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100 w-full h-full flex flex-col"
+>
+    <div class="flex justify-between items-center mb-6 w-full h-full">
         <h2 class="text-xl font-bold text-blue-700 flex items-center gap-2">
             <svg
                 class="w-32 h-32 text-purple-400"
@@ -47,7 +51,7 @@
         </Button>
     </div>
     {#if !minimized}
-        <div class="space-y-4">
+        <div class="space-y-4 flex-1 overflow-y-auto">
             {#each selectedDevicesFn() as device, index}
                 {@const deviceName =
                     device.kind == 'Screen'
@@ -101,6 +105,18 @@
                                 <span>{device.channels} channels</span>
                             </div>
                         {/if}
+                        <div>
+                            <span class="font-medium">Streaming Enabled:</span>
+                            <span
+                                >{streamingEnabled[
+                                    device.kind === 'Screen'
+                                        ? device.screenIdOrName
+                                        : device.deviceId
+                                ]
+                                    ? 'Yes'
+                                    : 'No'}</span
+                            >
+                        </div>
                     </div>
                 </div>
             {/each}

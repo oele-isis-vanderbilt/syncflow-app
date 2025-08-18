@@ -13,7 +13,14 @@ pub fn get_devices() -> Vec<MediaDeviceInfo> {
                     .into_iter()
                     .filter(|cap| match cap {
                         MediaCapability::Video(video_cap) => {
-                            video_cap.codec == "image/jpeg" || video_cap.codec == "video/x-raw"
+                            #[cfg(target_os = "macos")]
+                            {
+                                video_cap.codec == "image/jpeg" || video_cap.codec == "video/x-raw"
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                video_cap.codec == "image/jpeg"
+                            }
                         }
                         _ => false,
                     })

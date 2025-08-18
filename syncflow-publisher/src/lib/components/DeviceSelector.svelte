@@ -1,13 +1,13 @@
 <script lang="ts">
     import type { MediaDeviceInfo, PublishOptions } from './types';
-    import { Button, Select } from 'flowbite-svelte';
+    import { Button, Select, Toggle } from 'flowbite-svelte';
 
     let {
         device,
         addDevice,
     }: {
         device: MediaDeviceInfo;
-        addDevice: (option: PublishOptions) => void;
+        addDevice: (option: PublishOptions, enableStreaming?: boolean) => void;
         removeDevice: (id: string) => void;
     } = $props();
 
@@ -94,6 +94,7 @@
                 .flatMap((capability) => {
                     return capability.framerates.map((framerate) => ({
                         kind: 'Screen',
+                        codec: capability.codec,
                         screenIdOrName: device.devicePath,
                         width: capability.width,
                         height: capability.height,
@@ -127,22 +128,31 @@
         }));
     });
 
-    let selectedVideoOption: PublishOptions | null = $state(null);
+    let streamingDisabled = $state(false);
 </script>
 
 <div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100">
     <div class="flex flex-col justify-between gap-2">
-        <h3 class="text-lg font-semibold text-blue-700">
-            {device.displayName} ({device.deviceClass})
-        </h3>
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-md font-semibold text-blue-700">
+                {device.displayName} ({device.deviceClass})
+            </h3>
+            <Toggle bind:checked={streamingDisabled}>
+                <span class="text-xs">Disbale Streaming</span>
+            </Toggle>
+        </div>
         {#if device.deviceClass == 'Video/Source'}
             <Select
                 items={selectOptions}
                 placeholder="Select Resolution and Codecs"
-                bind:value={selectedVideoOption}
+                bind:value={selectedOption}
             />
-            {#if selectedVideoOption}
-                <Button color="blue" class="mt-2" onclick={() => addDevice(selectedVideoOption!)}>
+            {#if selectedOption}
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
+                >
                     Add Video Device
                 </Button>
             {/if}

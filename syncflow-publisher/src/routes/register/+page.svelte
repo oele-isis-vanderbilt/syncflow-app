@@ -12,6 +12,11 @@
         syncflowApiSecret: '',
         deviceName: '',
         deviceGroup: '',
+        rabbitmqHost: '',
+        rabbitmqPort: '',
+        rabbitmqVhost: '',
+        rabbitmqUsername: '',
+        rabbitmqPassword: '',
     });
 
     async function handleSubmit(event: Event) {
@@ -25,6 +30,11 @@
                     syncflowApiSecret: credentials.syncflowApiSecret,
                     deviceName: credentials.deviceName === '' ? null : credentials.deviceName,
                     deviceGroup: credentials.deviceGroup,
+                    rabbitmqHost: credentials.rabbitmqHost,
+                    rabbitmqPort: credentials.rabbitmqPort,
+                    rabbitmqVhost: credentials.rabbitmqVhost,
+                    rabbitmqUsername: credentials.rabbitmqUsername,
+                    rabbitmqPassword: credentials.rabbitmqPassword,
                 },
             });
             goto('/');
@@ -144,6 +154,71 @@
                     type="text"
                     bind:value={credentials.deviceGroup}
                     placeholder="Enter Device Group"
+                    required
+                    class="focus:ring-blue-500 focus:border-blue-500"
+                />
+            </div>
+            <div>
+                <Label for="rabbitmq-username" class="block text-sm font-medium text-blue-900 mb-1">
+                    RabbitMQ Username
+                </Label>
+                <Input
+                    id="rabbitmq-username"
+                    type="text"
+                    bind:value={credentials.rabbitmqUsername}
+                    placeholder="Enter RabbitMQ Username"
+                    required
+                    class="focus:ring-blue-500 focus:border-blue-500"
+                />
+            </div>
+            <div>
+                <Label for="rabbitmq-host" class="block text-sm font-medium text-blue-900 mb-1">
+                    RabbitMQ Host
+                </Label>
+                <Input
+                    id="rabbitmq-host"
+                    type="text"
+                    bind:value={credentials.rabbitmqHost}
+                    placeholder="Enter RabbitMQ Host"
+                    required
+                    class="focus:ring-blue-500 focus:border-blue-500"
+                />
+            </div>
+            <div>
+                <Label for="rabbitmq-port" class="block text-sm font-medium text-blue-900 mb-1">
+                    RabbitMQ Port
+                </Label>
+                <Input
+                    id="rabbitmq-port"
+                    type="number"
+                    bind:value={credentials.rabbitmqPort}
+                    placeholder="Enter RabbitMQ Port"
+                    required
+                    class="focus:ring-blue-500 focus:border-blue-500"
+                />
+            </div>
+            <div>
+                <Label for="rabbitmq-vhost" class="block text-sm font-medium text-blue-900 mb-1">
+                    RabbitMQ Virtual Host
+                </Label>
+                <Input
+                    id="rabbitmq-vhost"
+                    type="text"
+                    bind:value={credentials.rabbitmqVhost}
+                    placeholder="Enter RabbitMQ Virtual Host"
+                    required
+                    class="focus:ring-blue-500 focus:border-blue-500"
+                />
+            </div>
+            <div>
+                <Label for="rabbitmq-password" class="block text-sm font-medium text-blue-900 mb-1">
+                    RabbitMQ Password
+                </Label>
+                <Input
+                    id="rabbitmq-password"
+                    type="password"
+                    bind:value={credentials.rabbitmqPassword}
+                    placeholder="Enter RabbitMQ Password"
                     required
                     class="focus:ring-blue-500 focus:border-blue-500"
                 />

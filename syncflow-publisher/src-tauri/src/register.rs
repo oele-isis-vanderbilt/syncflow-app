@@ -18,6 +18,11 @@ pub struct RegisterCredentials {
     pub syncflow_api_secret: String,
     pub device_name: Option<String>,
     pub device_group: String,
+    pub rabbitmq_host: String,
+    pub rabbitmq_port: u16,
+    pub rabbitmq_vhost: String,
+    pub rabbitmq_username: String,
+    pub rabbitmq_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

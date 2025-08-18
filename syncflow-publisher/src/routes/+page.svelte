@@ -14,8 +14,13 @@
     let registrationDetails = $derived.by(() => data.registration);
     let mediaDevices = $derived.by(() => data.devices || []);
 
-    let { getFn, getSelectedDevicesFn, addDevice, removeDevice, getRemainingDevicesFn } =
-        devicesStore!;
+    let {
+        getSelectedDevicesFn,
+        addDevice,
+        removeDevice,
+        getRemainingDevicesFn,
+        getStreamingConfigFn,
+    } = devicesStore!;
 
     let availableDevicesToSelect = $derived.by(() => {
         const remainingDevicesFn = getRemainingDevicesFn();
@@ -30,8 +35,6 @@
             error(500, { message: `Deregistration failed: ${JSON.stringify(err)}` });
         }
     }
-
-    $inspect(availableDevicesToSelect);
 </script>
 
 <main
@@ -67,59 +70,35 @@
             <p class="text-lg text-gray-500">No registration details found.</p>
         </div>
     {/if}
-    <div class="flex items-center justify-between flex-col md:flex-row w-full">
-        {#if mediaDevices.length > 0}
-            <div class="p-5 flex-1">
-                <Devices
-                    devices={availableDevicesToSelect}
-                    onAddDevice={addDevice}
-                    onRemoveDevice={removeDevice}
-                />
-            </div>
-        {:else}
-            <div class="flex flex-col items-center justify-center mt-12">
-                <svg
-                    class="w-16 h-16 text-gray-300 mb-4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                    ><path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 8v4l3 3m6 0a9 9 0 11-18 0 9 9 0 0118 0z"
-                    /></svg
-                >
-                <p class="text-lg text-gray-500">No Media Devices Found</p>
-            </div>
-        {/if}
+    <div class="flex items-center justify-between flex-col md:flex-row w-full h-full">
+        <div class="p-5 flex-1">
+            <Devices
+                devices={availableDevicesToSelect}
+                onAddDevice={addDevice}
+                onRemoveDevice={removeDevice}
+            />
+        </div>
 
-        {#if getSelectedDevicesFn()().length > 0}
-            <div class="p-5 flex-1">
-                <SelectedDevices
-                    allDevices={mediaDevices}
-                    selectedDevicesFn={getSelectedDevicesFn()}
-                    onRemoveDevice={removeDevice}
-                />
-            </div>
-        {:else}
-            <div class="flex flex-col items-center justify-center mt-12">
-                <svg
-                    class="w-16 h-16 text-gray-300 mb-4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                    ><path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 8v4l3 3m6 0a9 9 0 11-18 0 9 9 0 0118 0z"
-                    /></svg
-                >
-                <p class="text-lg text-gray-500">
-                    No devices selected for publishing. Please select devices from the list above.
-                </p>
-            </div>
-        {/if}
+        <div class="p-5 flex-1 h-full">
+            <SelectedDevices
+                allDevices={mediaDevices}
+                selectedDevicesFn={getSelectedDevicesFn()}
+                onRemoveDevice={removeDevice}
+                streamingConfigFn={getStreamingConfigFn()}
+            />
+        </div>
+    </div>
+
+    <div>
+        <Button
+            class="w-full mb-20"
+            color="blue"
+            disabled={!getSelectedDevicesFn()().length}
+            onclick={() => {}}
+        >
+            {getSelectedDevicesFn()().length > 0
+                ? 'Start Publishing'
+                : 'Please select at least one device to publish'}
+        </Button>
     </div>
 </main>
