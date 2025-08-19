@@ -3,6 +3,8 @@ mod devices;
 mod errors;
 mod models;
 mod register;
+mod session_listener;
+mod syncflow_publisher;
 mod utils;
 
 use std::{
@@ -10,11 +12,21 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use devices::get_devices;
-use register::{delete_registration, register_to_syncflow};
-use tauri::Manager;
+use syncflow_shared::device_models::NewSessionMessage;
+use tokio::sync::Mutex as AsyncMutex;
 
-use crate::{errors::SyncFlowPublisherError, register::RegistrationResponse};
+use devices::{delete_streaming_config, get_devices, get_streaming_config, set_streaming_config};
+use register::{delete_registration, register_to_syncflow};
+use session_listener::SessionListener;
+use tauri::{Listener, Manager};
+
+use crate::{
+    devices::initialize_streaming_config,
+    errors::SyncFlowPublisherError,
+    register::{get_credentials, get_device_details, RegistrationResponse},
+    session_listener::ClonableNewSessionMessage,
+    syncflow_publisher::record_publish_to_syncflow,
+};
 
 fn create_app_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home_dir = dirs::home_dir().ok_or_else(|| {
@@ -48,11 +60,91 @@ pub fn run() {
         .setup(|app| {
             livekit_gstreamer::initialize_gstreamer();
             let app_dir = create_app_dir().expect("Failed to create app directory");
+            let recordings_dir = app_dir.clone().join("recordings");
 
+            let app_handle = app.handle().clone();
+            let _id = app.listen("new-session", move |event| {
+                let payload = event.payload();
+                let handle = app_handle.clone();
+                let recordings_dir_cloned = recordings_dir.clone();
+
+                if let Ok(new_session_details) =
+                    serde_json::from_str::<ClonableNewSessionMessage>(payload)
+                {
+                    let new_session = new_session_details.clone();
+                    let devices_and_streaming_config = {
+                        let app_state = app_handle.state::<models::AppState>();
+                        let config_guard = app_state.recording_and_streaming_config.lock().unwrap();
+                        config_guard.clone()
+                    };
+                    let registration = {
+                        let app_state = app_handle.state::<models::AppState>();
+                        let registration_guard = app_state.registration.lock().unwrap();
+                        registration_guard.clone()
+                    };
+                    let project_client = {
+                        let app_state = app_handle.state::<models::AppState>();
+                        let client_guard = app_state.client.lock().unwrap();
+                        client_guard.clone()
+                    };
+                    tauri::async_runtime::spawn(async move {
+                        if let (
+                            Some(devices_config),
+                            Some(registration_details),
+                            Some(project_client),
+                        ) = (devices_and_streaming_config, registration, project_client)
+                        {
+                            record_publish_to_syncflow(
+                                format!(
+                                    "{}-{}({})",
+                                    registration_details.device_name.replace(" ", "-"),
+                                    registration_details.device_id[..8].to_string(),
+                                    registration_details.device_group
+                                ),
+                                new_session.into(),
+                                devices_config,
+                                handle,
+                                &project_client,
+                                &recordings_dir_cloned,
+                            )
+                            .await;
+                        }
+                    });
+                }
+            });
+            let app_handle = app.handle().clone();
             tauri::async_runtime::block_on(async {
                 let client = register::intialize_client(&app_dir).await;
+                let credentials = get_credentials(&app_dir).await;
+                let device_registration_details = get_device_details(&app_dir).await;
                 let registration = if let Some(c) = client.as_ref() {
                     register::register_if_needed(c, &app_dir).await
+                } else {
+                    None
+                };
+
+                let streaming_config = initialize_streaming_config(&app_dir);
+                let session_listener = if let (Some(reg_details), Some(credentials)) =
+                    (device_registration_details.as_ref(), credentials)
+                {
+                    let mut listener = SessionListener::new(
+                        &credentials.rabbitmq_host,
+                        credentials.rabbitmq_port,
+                        &credentials.rabbitmq_username,
+                        &credentials.rabbitmq_password,
+                        &credentials.rabbitmq_vhost,
+                        &reg_details
+                            .session_notification_exchange_name
+                            .clone()
+                            .unwrap(),
+                        &reg_details
+                            .session_notification_binding_key
+                            .clone()
+                            .unwrap(),
+                    );
+                    let _ = listener.start().await;
+                    let _ = listener.start_frontend_notifications(app_handle).await;
+                    Some(listener)
                 } else {
                     None
                 };
@@ -60,6 +152,8 @@ pub fn run() {
                     client: Arc::new(Mutex::new(client)),
                     app_dir,
                     registration: Arc::new(Mutex::new(registration)),
+                    recording_and_streaming_config: Arc::new(Mutex::new(streaming_config)),
+                    session_listener: Arc::new(AsyncMutex::new(session_listener)),
                 };
                 app.manage(app_state);
             });
@@ -69,6 +163,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_devices,
+            set_streaming_config,
+            get_streaming_config,
+            delete_streaming_config,
             get_registration,
             register_to_syncflow,
             delete_registration,
@@ -80,6 +177,15 @@ pub fn run() {
                 tauri::async_runtime::block_on(async {
                     let app_state = app_handle.state::<models::AppState>();
                     let _ = register::deregister_from_syncflow(&app_state).await;
+
+                    let mut session_listener_guard = app_state.session_listener.lock().await;
+
+                    if let Some(ref mut listener) = *session_listener_guard {
+                        println!("Stopping session listener...");
+                        if let Err(e) = listener.stop().await {
+                            eprintln!("Error stopping session listener: {}", e);
+                        }
+                    }
                 });
             }
         })

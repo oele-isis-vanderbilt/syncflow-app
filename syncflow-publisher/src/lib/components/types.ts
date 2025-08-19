@@ -87,3 +87,13 @@ export type PublishOptions =
     | ({ kind: 'Video' } & VideoPublishOptions)
     | ({ kind: 'Audio' } & AudioPublishOptions)
     | ({ kind: 'Screen' } & ScreenPublishOptions);
+
+export interface DeviceRecordingAndStreamingConfig {
+    enableStreaming: boolean;
+    publishOptions: PublishOptions;
+}
+
+export interface NewSessionMessage {
+    sessionId: string;
+    sessionName: string;
+}

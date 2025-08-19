@@ -6,12 +6,14 @@
         selectedDevicesFn,
         streamingConfigFn,
         allDevices,
-        onRemoveDevice,
+        onRemoveDevice = () => {},
+        showDeleteButton = true,
     }: {
         selectedDevicesFn: () => PublishOptions[];
         allDevices: MediaDeviceInfo[];
-        onRemoveDevice: (deviceId: string) => void;
+        onRemoveDevice?: (deviceId: string) => void;
         streamingConfigFn: () => Record<string, boolean>;
+        showDeleteButton?: boolean;
     } = $props();
 
     let minimized = $state(false);
@@ -63,20 +65,22 @@
                             <span class="font-semibold text-purple-700">{device.kind}</span>
                             <span class="text-gray-600">({deviceName})</span>
                         </div>
-                        <Button
-                            color="red"
-                            outline
-                            size="xs"
-                            onclick={() => {
-                                if (device.kind === 'Screen') {
-                                    onRemoveDevice(device.screenIdOrName);
-                                } else {
-                                    onRemoveDevice(device.deviceId);
-                                }
-                            }}
-                        >
-                            Delete
-                        </Button>
+                        {#if showDeleteButton}
+                            <Button
+                                color="red"
+                                outline
+                                size="xs"
+                                onclick={() => {
+                                    if (device.kind === 'Screen') {
+                                        onRemoveDevice(device.screenIdOrName);
+                                    } else {
+                                        onRemoveDevice(device.deviceId);
+                                    }
+                                }}
+                            >
+                                Delete
+                            </Button>
+                        {/if}
                     </div>
                     <div class="text-sm text-gray-700">
                         <div>

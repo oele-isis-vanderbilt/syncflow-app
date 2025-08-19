@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::errors::SyncFlowPublisherError;
+use crate::utils::save_json;
 use crate::{models, utils as app_utils};
 use serde::{Deserialize, Serialize};
 use syncflow_client::{ProjectClient, ProjectClientError};
@@ -87,10 +88,11 @@ pub async fn register_to_syncflow(
 
     *client = Some(project_client);
 
-    let credentials_file = app_state.app_dir.join("credentials.json");
-    std::fs::write(credentials_file, serde_json::to_string(&credentials)?)?;
-    let registration_file = app_state.app_dir.join("registration.json");
-    std::fs::write(registration_file, serde_json::to_string(&device_response)?)?;
+    save_json(&credentials, &app_state.app_dir.join("credentials.json"))?;
+    save_json(
+        &device_response,
+        &app_state.app_dir.join("registration.json"),
+    )?;
     let registration_response = RegistrationResponse::compose(&device_response, &project_details);
     let mut registration_guard = app_state.registration.lock().unwrap();
     *registration_guard = Some(registration_response.clone());
@@ -109,6 +111,26 @@ pub async fn intialize_client(app_dir: &Path) -> Option<ProjectClient> {
             &credentials.syncflow_api_key,
             &credentials.syncflow_api_secret,
         ))
+    } else {
+        None
+    }
+}
+
+pub async fn get_credentials(app_dir: &Path) -> Option<RegisterCredentials> {
+    let credentials_path = app_dir.join("credentials.json");
+    if credentials_path.exists() {
+        let credentials_str = std::fs::read_to_string(&credentials_path).ok()?;
+        serde_json::from_str(&credentials_str).ok()
+    } else {
+        None
+    }
+}
+
+pub async fn get_device_details(app_dir: &Path) -> Option<DeviceResponse> {
+    let registration_path = app_dir.join("registration.json");
+    if registration_path.exists() {
+        let registration_str = std::fs::read_to_string(&registration_path).ok()?;
+        serde_json::from_str(&registration_str).ok()
     } else {
         None
     }
@@ -138,10 +160,7 @@ pub async fn register_if_needed(
             {
                 registration = new_device;
                 let registration_file = app_dir.join("registration.json");
-                let _ = std::fs::write(
-                    registration_file,
-                    serde_json::to_string(&registration).ok()?,
-                );
+                save_json(&registration, &registration_file).ok()?;
             }
         }
         Some(RegistrationResponse::compose(

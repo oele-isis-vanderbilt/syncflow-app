@@ -8,6 +8,7 @@
     import Devices from '$lib/components/Devices.svelte';
     import { devicesStore } from '$lib/store.svelte';
     import SelectedDevices from '$lib/components/SelectedDevices.svelte';
+    import type { DeviceRecordingAndStreamingConfig } from '$lib/components/types';
 
     let { data }: PageProps = $props();
 
@@ -35,6 +36,8 @@
             error(500, { message: `Deregistration failed: ${JSON.stringify(err)}` });
         }
     }
+
+    let errorMessage = $state<string | null>(null);
 </script>
 
 <main
@@ -90,11 +93,44 @@
     </div>
 
     <div>
+        {#if errorMessage}
+            <div class="bg-red-100 text-red-700 p-4 rounded-lg mb-4">
+                <p class="font-semibold">Error:</p>
+                <p>{errorMessage}</p>
+            </div>
+        {/if}
         <Button
             class="w-full mb-20"
             color="blue"
             disabled={!getSelectedDevicesFn()().length}
-            onclick={() => {}}
+            onclick={async () => {
+                const selectedDevicesFn = getSelectedDevicesFn();
+                const streamingConfigFn = getStreamingConfigFn();
+                const selectedDevices = selectedDevicesFn();
+                const streamingConfigs = streamingConfigFn();
+                const recordingAndStreamingConfig: DeviceRecordingAndStreamingConfig[] =
+                    selectedDevices.map((option) => {
+                        return {
+                            enableStreaming:
+                                streamingConfigs[
+                                    option.kind === 'Screen'
+                                        ? option.screenIdOrName
+                                        : option.deviceId
+                                ],
+                            publishOptions: option,
+                        };
+                    });
+
+                try {
+                    await invoke('set_streaming_config', {
+                        configs: recordingAndStreamingConfig,
+                    });
+                    errorMessage = null;
+                    goto('/stream');
+                } catch (err) {
+                    errorMessage = `Failed to set streaming config: ${JSON.stringify(err)}`;
+                }
+            }}
         >
             {getSelectedDevicesFn()().length > 0
                 ? 'Start Publishing'
