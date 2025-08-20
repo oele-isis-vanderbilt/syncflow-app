@@ -17,17 +17,20 @@ jobs:
           run: |
             brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
             brew install llvm
-
-        - name: Setup Node.js
-          uses: actions/setup-node@v4
-          with:
-            node-version: '20'
-            cache: 'pnpm'
         
         - name: Set up pnpm
           uses: pnpm/action-setup@v4
           with:
             version: 'latest'
+        
+        - name: Setup Node.js
+          uses: actions/setup-node@v4
+          with:
+            node-version: '22'
+            cache: 'pnpm'
+
+        - name: Install Rust toolchain
+          run: curl https://sh.rustup.rs -sSf | sh -s -- -y
         
         - name: Build SyncFlow Publisher
           run: |
