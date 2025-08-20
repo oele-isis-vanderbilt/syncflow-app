@@ -1,3 +1,5 @@
+use crate::s3_uploader;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncFlowPublisherError {
     #[error("{0}")]
@@ -23,6 +25,9 @@ pub enum SyncFlowPublisherError {
 
     #[error("Failed to initialize: {0}")]
     InitializationError(String),
+
+    #[error(transparent)]
+    S3Error(#[from] s3_uploader::S3UploaderError),
 }
 
 #[derive(serde::Serialize)]
@@ -36,6 +41,7 @@ pub enum ErrorKind {
     GStreamer(String),
     Amqp(String),
     Initialize(String),
+    S3(String),
 }
 
 impl serde::Serialize for SyncFlowPublisherError {
@@ -53,6 +59,7 @@ impl serde::Serialize for SyncFlowPublisherError {
             Self::GStreamerError(_) => ErrorKind::GStreamer(error_message),
             Self::AmqpError(_) => ErrorKind::Amqp(error_message),
             Self::InitializationError(_) => ErrorKind::Initialize(error_message),
+            Self::S3Error(_) => ErrorKind::S3(error_message),
         };
         error_kind.serialize(serializer)
     }

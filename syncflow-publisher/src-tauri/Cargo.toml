@@ -32,3 +32,8 @@ gethostname = "1.0.2"
 local-ip-address = "0.6.5"
 amqprs = { version = "2.1.2", features = ["tls"] }
 tokio = { version = "1.47.1", features = ["full"] }
+rusoto_core = "0.48.0"
+rusoto_credential = "0.48.0"
+rusoto_s3 = "0.48.0"
+zip = "3.0"
+zip-extensions = "0.8.3"

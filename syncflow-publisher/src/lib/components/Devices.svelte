@@ -7,10 +7,12 @@
         devices,
         onAddDevice,
         onRemoveDevice,
+        onRefresh,
     }: {
         devices: MediaDeviceInfo[];
         onAddDevice: (option: PublishOptions) => void;
         onRemoveDevice: (id: string) => void;
+        onRefresh: () => void;
     } = $props();
     let minimized = $state(false);
 </script>
@@ -34,6 +36,7 @@
         <Button color="purple" outline class="ml-2" onclick={() => (minimized = !minimized)}>
             {minimized ? 'Show' : 'Minimize'}
         </Button>
+        <Button color="purple" outline class="ml-2" onclick={() => onRefresh()}>Refresh</Button>
     </div>
     {#if !minimized}
         {#each devices as device, index (device.devicePath)}

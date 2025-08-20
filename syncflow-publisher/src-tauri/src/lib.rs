@@ -3,6 +3,7 @@ mod devices;
 mod errors;
 mod models;
 mod register;
+mod s3_uploader;
 mod session_listener;
 mod syncflow_publisher;
 mod utils;
@@ -12,7 +13,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use syncflow_shared::device_models::NewSessionMessage;
 use tokio::sync::Mutex as AsyncMutex;
 
 use devices::{delete_streaming_config, get_devices, get_streaming_config, set_streaming_config};
@@ -23,9 +23,11 @@ use tauri::{Listener, Manager};
 use crate::{
     devices::initialize_streaming_config,
     errors::SyncFlowPublisherError,
+    models::S3Config,
     register::{get_credentials, get_device_details, RegistrationResponse},
     session_listener::ClonableNewSessionMessage,
     syncflow_publisher::record_publish_to_syncflow,
+    utils::load_json,
 };
 
 fn create_app_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -61,6 +63,22 @@ pub fn run() {
             livekit_gstreamer::initialize_gstreamer();
             let app_dir = create_app_dir().expect("Failed to create app directory");
             let recordings_dir = app_dir.clone().join("recordings");
+            let s3_config_file = app_dir.join("s3_credentials.json");
+
+            let (s3_client, bucket_name): (Option<rusoto_s3::S3Client>, Option<String>) =
+                if s3_config_file.exists() {
+                    match load_json::<S3Config>(&s3_config_file) {
+                        Ok(config) => {
+                            println!("S3 config loaded successfully");
+                            let bucket_name = config.s3_bucket.clone();
+                            let s3_client = rusoto_s3::S3Client::from(config);
+                            (Some(s3_client), Some(bucket_name))
+                        }
+                        Err(_) => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
 
             let app_handle = app.handle().clone();
             let _id = app.listen("new-session", move |event| {
@@ -87,6 +105,8 @@ pub fn run() {
                         let client_guard = app_state.client.lock().unwrap();
                         client_guard.clone()
                     };
+
+                    let (s3_client, bucket_name) = (s3_client.clone(), bucket_name.clone());
                     tauri::async_runtime::spawn(async move {
                         if let (
                             Some(devices_config),
@@ -99,13 +119,15 @@ pub fn run() {
                                     "{}-{}({})",
                                     registration_details.device_name.replace(" ", "-"),
                                     registration_details.device_id[..8].to_string(),
-                                    registration_details.device_group
+                                    registration_details.device_group,
                                 ),
                                 new_session.into(),
                                 devices_config,
                                 handle,
                                 &project_client,
                                 &recordings_dir_cloned,
+                                s3_client,
+                                bucket_name,
                             )
                             .await;
                         }

@@ -21,6 +21,7 @@
         removeDevice,
         getRemainingDevicesFn,
         getStreamingConfigFn,
+        refreshAvailableDevices,
     } = devicesStore!;
 
     let availableDevicesToSelect = $derived.by(() => {
@@ -79,6 +80,7 @@
                 devices={availableDevicesToSelect}
                 onAddDevice={addDevice}
                 onRemoveDevice={removeDevice}
+                onRefresh={refreshAvailableDevices}
             />
         </div>
 

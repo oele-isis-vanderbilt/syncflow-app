@@ -97,3 +97,26 @@ export interface NewSessionMessage {
     sessionId: string;
     sessionName: string;
 }
+
+export type PublicationNotification =
+    | PublicationNotificationFailure
+    | PublicationNotificationStreamingSuccess
+    | PublicationNotificationUploadProgress;
+
+export interface PublicationNotificationFailure {
+    kind: 'failure';
+    reason: string;
+}
+
+export interface PublicationNotificationStreamingSuccess {
+    kind: 'streamingSuccess';
+    sessionId: string;
+    sessionName: string;
+    startedAt: string;
+    devices: string[];
+}
+
+export interface PublicationNotificationUploadProgress {
+    kind: 'uploadProgress';
+    progress: number;
+}

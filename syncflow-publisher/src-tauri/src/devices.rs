@@ -63,6 +63,7 @@ pub fn get_devices() -> Vec<MediaDeviceInfo> {
         .into_iter()
         .filter_map(|mut device| {
             if device.device_class == "Video/Source" {
+                println!("Device: {:?}", device.display_name);
                 device.capabilities = device
                     .capabilities
                     .into_iter()

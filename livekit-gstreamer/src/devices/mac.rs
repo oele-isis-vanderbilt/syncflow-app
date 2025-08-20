@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use serde::de;
 use std::sync::{Arc, Mutex};
 
 use display_info::DisplayInfo;
@@ -84,6 +85,8 @@ impl From<DisplayInfo> for MediaDeviceInfo {
 pub fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
+    device_monitor.stop();
+    device_monitor.start().ok()?;
     let devices = device_monitor.devices();
 
     devices.into_iter().find(|d| {
@@ -236,6 +239,8 @@ fn confirm_supported_api(device: &Device) -> Option<bool> {
 pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
+    device_monitor.stop();
+    device_monitor.start().ok();
     let devices = device_monitor.devices();
     let mut devices = devices
         .into_iter()
