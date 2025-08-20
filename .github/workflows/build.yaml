@@ -13,11 +13,6 @@ jobs:
         - name: Checkout code
           uses: actions/checkout@v4
         
-        - name: Install GStreamer and llvm
-          run: |
-            brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
-            brew install llvm
-        
         - name: Set up pnpm
           uses: pnpm/action-setup@v4
           with:
@@ -28,6 +23,7 @@ jobs:
           with:
             node-version: '22'
             cache: 'pnpm'
+            cache-dependency-path: 'syncflow-publisher/pnpm-lock.yaml'
 
         - name: Install Rust toolchain
           run: curl https://sh.rustup.rs -sSf | sh -s -- -y
