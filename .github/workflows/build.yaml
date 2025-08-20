@@ -31,5 +31,7 @@ jobs:
         
         - name: Build SyncFlow Publisher
           run: |
+            cd syncflow-publisher
             pnpm install
-            pnpm build
+            pnpm tauri build
+      
