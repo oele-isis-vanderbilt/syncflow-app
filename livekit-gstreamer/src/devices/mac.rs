@@ -47,6 +47,10 @@ fn get_frame_rates(display_info: &DisplayInfo) -> Vec<i32> {
         rates.push(30);
     }
 
+    if rate == 0.0 {
+        rates.push(30);
+    }
+
     rates
 }
 
