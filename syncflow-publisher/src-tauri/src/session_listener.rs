@@ -7,8 +7,25 @@ use amqprs::{
 };
 use syncflow_shared::device_models::{DeviceResponse, NewSessionMessage};
 use tauri::Emitter;
+use tokio_util::sync::CancellationToken;
 
 use crate::{errors::SyncFlowPublisherError, register::RegisterCredentials, utils::load_json};
+use rand::distr::Alphanumeric;
+use rand::Rng;
+
+fn random_string(len: usize) -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+#[derive(Debug)]
+enum ConsumerExit {
+    CancelledByUser,
+    StreamEnded,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +55,7 @@ impl From<ClonableNewSessionMessage> for NewSessionMessage {
 pub struct RMQTaskHandle {
     pub task: tokio::task::JoinHandle<()>,
     pub session_tx: tokio::sync::broadcast::Sender<ClonableNewSessionMessage>,
-    pub cancel_tx: tokio::sync::oneshot::Sender<()>,
+    pub cancel: CancellationToken,
 }
 
 #[derive(Debug)]
@@ -117,10 +134,10 @@ impl SessionListener {
                 "SessionListener is already active".into(),
             ));
         }
-
+        let cancel = CancellationToken::new();
+        let cancel_child = cancel.child_token();
         let (tx, _) = tokio::sync::broadcast::channel::<ClonableNewSessionMessage>(100);
         let tx_clone = tx.clone();
-        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         let rabbitmq_host = self.rabbitmq_host.clone();
         let rabbitmq_port = self.rabbitmq_port;
@@ -131,147 +148,33 @@ impl SessionListener {
         let binding_key = self.binding_key.clone();
 
         let task = tokio::spawn(async move {
-            let mut cancel_rx = cancel_rx;
-
-            let connection = match Self::create_connection(
-                &rabbitmq_host,
+            Self::run_forever(
+                rabbitmq_host,
                 rabbitmq_port,
-                &rabbitmq_username,
-                &rabbitmq_password,
-                &rabbitmq_vhost,
+                rabbitmq_username,
+                rabbitmq_password,
+                rabbitmq_vhost,
+                exchange_name,
+                binding_key,
+                tx_clone,
+                cancel_child,
             )
-            .await
-            {
-                Ok(conn) => conn,
-                Err(e) => {
-                    eprintln!("Failed to create RabbitMQ connection: {}", e);
-                    return;
-                }
-            };
-
-            let channel = match connection.open_channel(None).await {
-                Ok(ch) => ch,
-                Err(e) => {
-                    eprintln!("Failed to open RabbitMQ channel: {}", e);
-                    let _ = connection.close().await;
-                    return;
-                }
-            };
-
-            let queue_declare_args = QueueDeclareArguments::default()
-                .exclusive(true)
-                .auto_delete(true)
-                .finish();
-
-            let (queue_name, _, _) = match channel.queue_declare(queue_declare_args).await {
-                Ok(Some(result)) => result,
-                Ok(None) => {
-                    let _ = connection.close().await;
-                    return;
-                }
-                Err(e) => {
-                    let _ = connection.close().await;
-                    return;
-                }
-            };
-
-            let queue_bind_args =
-                QueueBindArguments::new(&queue_name, &exchange_name, &binding_key);
-            if let Err(e) = channel.queue_bind(queue_bind_args).await {
-                eprintln!("Failed to bind queue: {}", e);
-                let _ = connection.close().await;
-                return;
-            }
-
-            let consume_args =
-                BasicConsumeArguments::new(&queue_name, "syncflow-publisher-consumer");
-            let (_, mut rx) = match channel.basic_consume_rx(consume_args).await {
-                Ok(result) => result,
-                Err(e) => {
-                    eprintln!("Failed to start consuming: {}", e);
-                    let _ = connection.close().await;
-                    return;
-                }
-            };
-
-            println!("Session listener started, waiting for messages...");
-
-            loop {
-                tokio::select! {
-                    message = rx.recv() => {
-                        match message {
-                            Some(message) => {
-                                match message.content {
-                                    Some(content) => {
-                                        match serde_json::from_slice::<NewSessionMessage>(&content) {
-                                            Ok(new_session_message) => {
-                                                println!("New session message received: {:?}", new_session_message);
-                                                if let Err(_) = tx_clone.send(new_session_message.into()) {
-                                                    eprintln!("Failed to send new session message to channel (no receivers)");
-                                                }
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to parse message: {}", e);
-                                            }
-                                        }
-                                    }
-                                    None => {
-                                        eprintln!("Message has no content");
-                                    }
-                                }
-                            }
-                            None => {
-                                println!("📪 No more messages, ending loop");
-                                break;
-                            }
-                        }
-                    }
-                    _ = &mut cancel_rx => {
-                        println!("Received cancel signal, stopping session listener");
-                        break;
-                    }
-                }
-            }
-
-            if let Err(e) = connection.close().await {
-                eprintln!("Error closing RabbitMQ connection: {}", e);
-            } else {
-                println!("RabbitMQ connection closed successfully");
-            }
+            .await;
         });
 
         self.rmq_task_handle = Some(RMQTaskHandle {
             task,
             session_tx: tx,
-            cancel_tx,
+            cancel: cancel,
         });
         self.status = SessionListenerStatus::Active;
 
         Ok(())
     }
 
-    // Helper function to create connection
-    async fn create_connection(
-        host: &str,
-        port: u16,
-        username: &str,
-        password: &str,
-        vhost: &str,
-    ) -> Result<Connection, SyncFlowPublisherError> {
-        let args = OpenConnectionArguments::new(host, port, username, password)
-            .virtual_host(vhost)
-            .tls_adaptor(TlsAdaptor::without_client_auth(None, host.to_string()).unwrap())
-            .finish();
-
-        let connection = Connection::open(&args).await?;
-        Ok(connection)
-    }
-
     pub async fn stop(&mut self) -> Result<(), SyncFlowPublisherError> {
         if let Some(handle) = self.rmq_task_handle.take() {
-            if let Err(_) = handle.cancel_tx.send(()) {
-                println!("Cancel signal receiver already dropped");
-            }
+            handle.cancel.cancel();
 
             match tokio::time::timeout(std::time::Duration::from_secs(5), handle.task).await {
                 Ok(Ok(_)) => println!("SessionListener task stopped cleanly"),
@@ -360,6 +263,162 @@ impl SessionListener {
             !handle.task.is_finished()
         } else {
             false
+        }
+    }
+}
+
+impl SessionListener {
+    async fn create_connection_with_heartbeat(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        vhost: &str,
+        heartbeat_secs: u16,
+    ) -> Result<Connection, SyncFlowPublisherError> {
+        let tls = TlsAdaptor::without_client_auth(None, host.to_string())?;
+        let args = OpenConnectionArguments::new(host, port, username, password)
+            .virtual_host(vhost)
+            .tls_adaptor(tls)
+            .heartbeat(heartbeat_secs)
+            .finish();
+
+        Ok(Connection::open(&args).await?)
+    }
+}
+
+impl SessionListener {
+    async fn run_forever(
+        rabbitmq_host: String,
+        rabbitmq_port: u16,
+        rabbitmq_username: String,
+        rabbitmq_password: String,
+        rabbitmq_vhost: String,
+        exchange_name: String,
+        binding_key: String,
+        tx_clone: tokio::sync::broadcast::Sender<ClonableNewSessionMessage>,
+        cancel: CancellationToken,
+    ) {
+        let mut backoff = std::time::Duration::from_millis(500);
+
+        loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            match Self::run_once(
+                &rabbitmq_host,
+                rabbitmq_port,
+                &rabbitmq_username,
+                &rabbitmq_password,
+                &rabbitmq_vhost,
+                &exchange_name,
+                &binding_key,
+                tx_clone.clone(),
+                cancel.clone(),
+            )
+            .await
+            {
+                Ok(ConsumerExit::CancelledByUser) => {
+                    println!("Consumer stopped by cancel signal.");
+                    break;
+                }
+                Ok(ConsumerExit::StreamEnded) => {
+                    println!(
+                        "Consumer stream ended (server cancel / channel closed). Reconnecting…"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Consumer error: {e}. Reconnecting…");
+                }
+            }
+
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(30));
+        }
+    }
+
+    async fn run_once(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        vhost: &str,
+        exchange_name: &str,
+        binding_key: &str,
+        tx_clone: tokio::sync::broadcast::Sender<ClonableNewSessionMessage>,
+        cancel_rx: CancellationToken,
+    ) -> Result<ConsumerExit, SyncFlowPublisherError> {
+        let connection =
+            Self::create_connection_with_heartbeat(host, port, username, password, vhost, 30)
+                .await?;
+
+        let channel = connection.open_channel(None).await?;
+
+        let queue_declare_args = QueueDeclareArguments::default()
+            .exclusive(true)
+            .auto_delete(true)
+            .finish();
+
+        let (queue_name, _, _) = channel
+            .queue_declare(queue_declare_args)
+            .await?
+            .ok_or_else(|| {
+                SyncFlowPublisherError::NotIntialized("queue_declare returned None".into())
+            })?;
+
+        channel
+            .queue_bind(QueueBindArguments::new(
+                &queue_name,
+                exchange_name,
+                binding_key,
+            ))
+            .await?;
+
+        let consume_args = BasicConsumeArguments::new(
+            &queue_name,
+            &format!("session_listener_{}", random_string(8)),
+        )
+        .manual_ack(false)
+        .finish();
+
+        let (_ctag, mut rx) = channel.basic_consume_rx(consume_args).await?;
+
+        println!("Session listener started; waiting for messages on queue '{queue_name}' …");
+
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = cancel_rx.cancelled() => {
+                    println!("Cancel signal received; closing channel/connection.");
+                    let _ = channel.close().await;
+                    let _ = connection.close().await;
+                    return Ok(ConsumerExit::CancelledByUser);
+                }
+
+                maybe_msg = rx.recv() => {
+                    match maybe_msg {
+                        Some(delivery) => {
+                            if let Some(body) = delivery.content {
+                                match serde_json::from_slice::<NewSessionMessage>(&body) {
+                                    Ok(ns) => {
+                                        let _ = tx_clone.send(ns.into());
+                                    }
+                                    Err(e) => eprintln!("Failed to parse message: {e}"),
+                                }
+                            } else {
+                                eprintln!("Received a delivery with no content.");
+                            }
+                        }
+                        None => {
+                            let _ = channel.close().await;
+                            let _ = connection.close().await;
+                            return Ok(ConsumerExit::StreamEnded);
+                        }
+                    }
+                }
+            }
         }
     }
 }
