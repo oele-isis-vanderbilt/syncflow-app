@@ -4,7 +4,7 @@ use crate::{
     errors::SyncFlowPublisherError, models::DeviceRecordingAndStreamingConfig,
     s3_uploader::upload_to_s3,
 };
-use livekit::{Room, RoomOptions};
+use livekit::{participant, Room, RoomOptions};
 use livekit_gstreamer::utils::system_time_nanos;
 use livekit_gstreamer::{lk_participant, GstMediaStream, LocalFileSaveOptions, PublishOptions};
 use serde::{Deserialize, Serialize};
@@ -17,21 +17,41 @@ use tauri::Emitter;
 use tokio::sync::mpsc::channel;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PublicationNotification {
+    Failure(FailureData),
+    StreamingSuccess(StreamingSuccessData),
+    UploadProgress(UploadProgressData),
+    SessionEnded(SessionEndedData),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(tag = "kind")]
-pub enum PublicationNotifcation {
-    Failure {
-        reason: String,
-    },
-    StreamingSuccess {
-        session_id: String,
-        session_name: String,
-        started_at: String,
-        devices: Vec<String>,
-    },
-    UploadProgress {
-        progress: f32,
-    },
+pub struct FailureData {
+    pub session_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingSuccessData {
+    pub session_id: String,
+    pub session_name: String,
+    pub started_at: String,
+    pub devices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadProgressData {
+    pub session_id: String,
+    pub progress: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEndedData {
+    pub session_id: String,
 }
 
 async fn generate_session_token(
@@ -70,9 +90,11 @@ pub async fn record_publish_to_syncflow(
     s3_client: Option<rusoto_s3::S3Client>,
     bucket_name: Option<String>,
 ) {
+    let participant_name = participant_name.replace(".", "-").replace(" ", "-");
+    let session_id = session_details.session_id.clone();
     let output_dir = out_dir.join(format!(
-        "{}-{}",
-        session_details.session_id, session_details.session_name
+        "{}-{}-{}",
+        session_id, session_details.session_name, participant_name
     ));
     let mut streams_and_recording_config: Vec<(GstMediaStream, bool)> = configs
         .into_iter()
@@ -106,9 +128,10 @@ pub async fn record_publish_to_syncflow(
     if let Err(e) = token_result {
         let _ = event_emitter.emit(
             "publication-notification",
-            PublicationNotifcation::Failure {
+            PublicationNotification::Failure(FailureData {
+                session_id: session_id.clone(),
                 reason: e.to_string(),
-            },
+            }),
         );
         return;
     }
@@ -125,9 +148,10 @@ pub async fn record_publish_to_syncflow(
     if let Err(e) = room_result {
         let _ = event_emitter.emit(
             "publication-notification",
-            PublicationNotifcation::Failure {
+            PublicationNotification::Failure(FailureData {
+                session_id: session_id.clone(),
                 reason: e.to_string(),
-            },
+            }),
         );
         return;
     }
@@ -143,7 +167,11 @@ pub async fn record_publish_to_syncflow(
     for (stream, enable_streaming) in streams_and_recording_config.iter_mut() {
         stream.start().await.unwrap();
         if *enable_streaming {
-            let result = participant.publish_stream(stream, None).await;
+            let device_name = stream
+                .get_device_name()
+                .unwrap_or("Unknown Device".to_string());
+            let track_name = format!("{}-{}", participant_name, device_name);
+            let result = participant.publish_stream(stream, Some(track_name)).await;
             if let Err(e) = result {
                 all_failures.push(e.to_string());
             }
@@ -154,21 +182,24 @@ pub async fn record_publish_to_syncflow(
         all_failures.iter().for_each(|e| {
             let _ = event_emitter.emit(
                 "publication-notification",
-                PublicationNotifcation::Failure { reason: e.clone() },
+                PublicationNotification::Failure(FailureData {
+                    reason: e.clone(),
+                    session_id: session_id.clone(),
+                }),
             );
         });
     } else {
         let _ = event_emitter.emit(
             "publication-notification",
-            PublicationNotifcation::StreamingSuccess {
-                session_id: session_details.session_id.clone(),
+            PublicationNotification::StreamingSuccess(StreamingSuccessData {
+                session_id: session_id.clone(),
                 session_name: session_details.session_name.clone(),
                 started_at: system_time_nanos().to_string(),
                 devices: streams_and_recording_config
                     .iter()
                     .filter_map(|(stream, _)| stream.get_device_name())
                     .collect(),
-            },
+            }),
         );
     }
 
@@ -179,6 +210,12 @@ pub async fn record_publish_to_syncflow(
                 for stream in streams_and_recording_config.iter_mut() {
                     stream.0.stop().await.unwrap();
                 }
+                let _ = event_emitter.emit(
+                    "publication-notification",
+                    PublicationNotification::SessionEnded(SessionEndedData {
+                        session_id: session_id.clone(),
+                    }),
+                );
                 break;
             }
             _ => {
@@ -200,6 +237,7 @@ pub async fn record_publish_to_syncflow(
         let s3_client = s3_client.unwrap();
         let failure_emitter = event_emitter.clone();
         let bucket_name = bucket_name.unwrap();
+        let session_id_clone = session_id.clone();
 
         let upload_handle = tauri::async_runtime::spawn(async move {
             println!("Starting upload to S3...");
@@ -210,9 +248,10 @@ pub async fn record_publish_to_syncflow(
             if let Err(e) = result {
                 let _ = failure_emitter.emit(
                     "publication-notification",
-                    PublicationNotifcation::Failure {
+                    PublicationNotification::Failure(FailureData {
+                        session_id: session_id_clone,
                         reason: e.to_string(),
-                    },
+                    }),
                 );
             }
         });
@@ -222,7 +261,10 @@ pub async fn record_publish_to_syncflow(
         while let Some(progress) = rx.recv().await {
             let _ = progress_emitter.emit(
                 "publication-notification",
-                PublicationNotifcation::UploadProgress { progress },
+                PublicationNotification::UploadProgress(UploadProgressData {
+                    progress,
+                    session_id: session_id.clone(),
+                }),
             );
         }
     }

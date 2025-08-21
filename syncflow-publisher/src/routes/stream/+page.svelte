@@ -1,6 +1,6 @@
 <script lang="ts">
     import SelectedDevices from '$lib/components/SelectedDevices.svelte';
-    import { Button, Progressbar } from 'flowbite-svelte';
+    import { Accordion, AccordionItem, Button, Progressbar } from 'flowbite-svelte';
     import type { PageProps } from './$types';
     import { invoke } from '@tauri-apps/api/core';
     import { goto } from '$app/navigation';
@@ -29,32 +29,56 @@
         publicationNotifications = [...publicationNotifications];
     });
 
-    let failures: PublicationNotificationFailure[] = $derived.by(() => {
-        return publicationNotifications.filter((notification) => notification.kind === 'failure');
-    });
-
-    let successes: PublicationNotificationStreamingSuccess[] = $derived.by(() => {
-        return publicationNotifications.filter(
-            (notification) => notification.kind === 'streamingSuccess'
+    let failures: Record<string, PublicationNotificationFailure[]> = $derived.by(() => {
+        return Object.fromEntries(
+            publicationNotifications
+                .filter((notification) => notification.kind === 'failure')
+                .map((notification) => [
+                    notification.sessionId,
+                    publicationNotifications.filter(
+                        (n) => n.kind === 'failure' && n.sessionId === notification.sessionId
+                    ) as PublicationNotificationFailure[],
+                ])
         );
     });
 
-    let uploadProgress = $derived.by(() => {
-        let progress = 0;
-        let progressMessages = publicationNotifications.filter(
-            (notification) => notification.kind === 'uploadProgress'
+    let successes: Record<string, PublicationNotificationStreamingSuccess[]> = $derived.by(() => {
+        return Object.fromEntries(
+            publicationNotifications
+                .filter((notification) => notification.kind === 'streamingSuccess')
+                .map((notification) => [
+                    notification.sessionId,
+                    publicationNotifications.filter(
+                        (n) =>
+                            n.kind === 'streamingSuccess' && n.sessionId === notification.sessionId
+                    ) as PublicationNotificationStreamingSuccess[],
+                ])
         );
-        if (progressMessages.length > 0) {
-            progress = progressMessages[progressMessages.length - 1].progress;
-        }
+    });
 
-        if (progress >= 100) {
-            setTimeout(() => {
-                uploadProgress = 0;
-            }, 2000);
-        }
+    let uploadProgress: Record<string, number> = $derived.by(() => {
+        const progressMap: Record<string, number> = {};
+        publicationNotifications
+            .filter((notification) => notification.kind === 'uploadProgress')
+            .forEach((notification) => {
+                progressMap[notification.sessionId] = notification.progress;
+            });
+        return progressMap;
+    });
 
-        return progress;
+    let endedSessions: Set<string> = $derived.by(() => {
+        const endedSet: Set<string> = new Set();
+        publicationNotifications
+            .filter((notification) => notification.kind === 'sessionEnded')
+            .forEach((notification) => {
+                endedSet.add(notification.sessionId);
+            });
+        return endedSet;
+    });
+
+    $inspect({
+        successes,
+        uploadProgress,
     });
 </script>
 
@@ -77,7 +101,7 @@
     />
     <Button
         color="red"
-        class="mt-4"
+        class="mt-4 w-64 self-center"
         onclick={async () => {
             await invoke('delete_streaming_config');
             goto('/');
@@ -93,7 +117,7 @@
                 <div>
                     <span class="text-sm font-medium text-gray-600">Local Recorded Devices:</span>
                     <p class="text-gray-800">
-                        {data.streamingConfigs.filter((config) => config.enableStreaming).length} device(s)
+                        {data.streamingConfigs.length} device(s)
                     </p>
                 </div>
 
@@ -124,7 +148,11 @@
             {#each sessionMessages as message}
                 <div class="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg border">
                     <div class="flex-shrink-0">
-                        <div class="w-2 h-2 bg-blue-500 rounded-full mt-2"></div>
+                        {#if endedSessions.has(message.sessionId)}
+                            <div class="w-2 h-2 bg-red-500 rounded-full mt-2"></div>
+                        {:else}
+                            <div class="w-2 h-2 bg-green-500 animate-pulse rounded-full mt-2"></div>
+                        {/if}
                     </div>
                     <div class="flex-1 min-w-0">
                         <div class="text-sm font-medium text-gray-900">
@@ -144,52 +172,72 @@
         </div>
     </div>
     <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
-        <h2 class="text-xl font-semibold text-gray-800 mb-4">Success Messages</h2>
-
-        <div class="space-y-2 max-h-64 overflow-y-auto">
-            {#each successes as success}
-                <div class="flex items-start space-x-3 p-3 bg-green-50 rounded-lg border">
-                    <div class="flex-shrink-0">
-                        <div class="w-2 h-2 bg-green-500 rounded-full mt-2"></div>
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <div class="text-sm font-medium text-green-900">
-                            {JSON.stringify(success.devices) || ''}
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Session Messages</h2>
+        <Accordion class="w-full">
+            {#each sessionMessages as message, index (message.sessionId)}
+                <AccordionItem open={index === sessionMessages.length - 1}>
+                    {#snippet header()}
+                        <div class="flex items-center justify-between w-full">
+                            <h2 class="text-lg font-medium text-gray-900">
+                                {message.sessionName}({message.sessionId})
+                            </h2>
+                            <div class="flex-shrink-0">
+                                {#if endedSessions.has(message.sessionId)}
+                                    <div class="w-5 h-5 bg-red-500 rounded-full mt-2 mr-10"></div>
+                                {:else}
+                                    <div
+                                        class="w-5 h-5 bg-green-500 animate-pulse rounded-full mt-2 mr-10"
+                                    ></div>
+                                {/if}
+                            </div>
                         </div>
-                        <div class="text-sm text-green-600">
-                            {success.startedAt || 'Streaming started successfully'}
-                        </div>
-                        {#if uploadProgress > 0}
-                            <Progressbar
-                                progress={uploadProgress}
-                                class="mt-2 w-64"
-                                title="S3 Upload Progress"
-                            />
+                    {/snippet}
+                    <div class="space-y-4 mt-4">
+                        {#if successes[message.sessionId]}
+                            <div class="bg-green-50 p-4 rounded-lg border border-green-200">
+                                <h3 class="text-md font-semibold text-green-800 mb-2">Messeges</h3>
+                                {#each successes[message.sessionId] as success}
+                                    <pre
+                                        class="text-sm text-green-900 bg-green-100 p-2 rounded">{JSON.stringify(
+                                            success,
+                                            null,
+                                            2
+                                        )}</pre>
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if failures[message.sessionId]}
+                            <div class="bg-red-50 p-4 rounded-lg border border-red-200">
+                                <h3 class="text-md font-semibold text-red-800 mb-2">Failures</h3>
+                                {#each failures[message.sessionId] as failure}
+                                    <pre
+                                        class="text-sm text-red-900 bg-red-100 p-2 rounded">{JSON.stringify(
+                                            failure,
+                                            null,
+                                            2
+                                        )}</pre>
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if uploadProgress[message.sessionId] !== undefined}
+                            <div class="space-y-2 mb-10">
+                                <h3 class="text-md font-semibold text-gray-800">Upload Progress</h3>
+                                <Progressbar
+                                    progress={uploadProgress[message.sessionId]}
+                                    labelInside
+                                    class="h-6"
+                                    color="green"
+                                    size="h-6"
+                                >
+                                    <span class="text-sm font-medium text-gray-700">
+                                        {uploadProgress[message.sessionId]}%
+                                    </span>
+                                </Progressbar>
+                            </div>
                         {/if}
                     </div>
-                </div>
-            {:else}
-                <div class="text-center text-gray-500 py-4">No success messages yet</div>
+                </AccordionItem>
             {/each}
-        </div>
-        {#if failures.length > 0}
-            <div class="mt-6">
-                <h2 class="text-xl font-semibold text-red-800 mb-4">Failure Messages</h2>
-                <div class="space-y-2 max-h-64 overflow-y-auto">
-                    {#each failures as failure}
-                        <div class="flex items-start space-x-3 p-3 bg-red-50 rounded-lg border">
-                            <div class="flex-shrink-0">
-                                <div class="w-2 h-2 bg-red-500 rounded-full mt-2"></div>
-                            </div>
-                            <div class="flex-1 min-w-0">
-                                <div class="text-sm font-medium text-red-900">
-                                    {failure.reason || 'Unknown failure'}
-                                </div>
-                            </div>
-                        </div>
-                    {/each}
-                </div>
-            </div>
-        {/if}
+        </Accordion>
     </div>
 </main>

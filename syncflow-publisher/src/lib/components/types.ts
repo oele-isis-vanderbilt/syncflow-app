@@ -101,10 +101,12 @@ export interface NewSessionMessage {
 export type PublicationNotification =
     | PublicationNotificationFailure
     | PublicationNotificationStreamingSuccess
-    | PublicationNotificationUploadProgress;
+    | PublicationNotificationUploadProgress
+    | SessionEnded;
 
 export interface PublicationNotificationFailure {
     kind: 'failure';
+    sessionId: string;
     reason: string;
 }
 
@@ -118,5 +120,11 @@ export interface PublicationNotificationStreamingSuccess {
 
 export interface PublicationNotificationUploadProgress {
     kind: 'uploadProgress';
+    sessionId: string;
     progress: number;
+}
+
+export interface SessionEnded {
+    kind: 'sessionEnded';
+    sessionId: string;
 }
