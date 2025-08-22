@@ -29,3 +29,6 @@ dotenvy = "0.15.7"
 log = "0.4.22"
 env_logger = "0.11.5"
 livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
+syncflow_client = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="client" }
+syncflow_shared = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="shared" }
+amqprs = { version = "2.1.2", features = ["tls"] }

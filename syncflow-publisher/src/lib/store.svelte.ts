@@ -1,4 +1,5 @@
 import type { MediaDeviceInfo, PublishOptions } from './components/types';
+import { invoke } from '@tauri-apps/api/core';
 
 export let devicesStore: {
     addDevice: (device: PublishOptions, alsoStream?: boolean) => void;
@@ -8,6 +9,7 @@ export let devicesStore: {
     getSelectedDevicesFn: () => () => PublishOptions[];
     getStreamingConfigFn: () => () => Record<string, boolean>;
     getFn: () => () => Record<string, PublishOptions>;
+    refreshAvailableDevices: () => Promise<void>;
 } | null = null;
 
 export function initialize(avaliableDevices: MediaDeviceInfo[]) {
@@ -56,6 +58,25 @@ export function initialize(avaliableDevices: MediaDeviceInfo[]) {
         },
         getFn: () => {
             return () => selectedDevicesStore;
+        },
+        refreshAvailableDevices: async () => {
+            try {
+                const devices: MediaDeviceInfo[] = await invoke('get_devices');
+                availableDevicesStore = devices.filter(
+                    (d) => !Object.keys(selectedDevicesStore).includes(d.devicePath)
+                );
+
+                for (const deviceId in selectedDevicesStore) {
+                    if (!devices.some((d) => d.devicePath === deviceId)) {
+                        delete selectedDevicesStore[deviceId];
+                    }
+                }
+
+                selectedDevicesStore = { ...selectedDevicesStore };
+                availableDevicesStore = [...availableDevicesStore];
+            } catch (error) {
+                console.error('Failed to refresh available devices:', error);
+            }
         },
     };
 }

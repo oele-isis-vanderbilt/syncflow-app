@@ -87,3 +87,44 @@ export type PublishOptions =
     | ({ kind: 'Video' } & VideoPublishOptions)
     | ({ kind: 'Audio' } & AudioPublishOptions)
     | ({ kind: 'Screen' } & ScreenPublishOptions);
+
+export interface DeviceRecordingAndStreamingConfig {
+    enableStreaming: boolean;
+    publishOptions: PublishOptions;
+}
+
+export interface NewSessionMessage {
+    sessionId: string;
+    sessionName: string;
+}
+
+export type PublicationNotification =
+    | PublicationNotificationFailure
+    | PublicationNotificationStreamingSuccess
+    | PublicationNotificationUploadProgress
+    | SessionEnded;
+
+export interface PublicationNotificationFailure {
+    kind: 'failure';
+    sessionId: string;
+    reason: string;
+}
+
+export interface PublicationNotificationStreamingSuccess {
+    kind: 'streamingSuccess';
+    sessionId: string;
+    sessionName: string;
+    startedAt: string;
+    devices: string[];
+}
+
+export interface PublicationNotificationUploadProgress {
+    kind: 'uploadProgress';
+    sessionId: string;
+    progress: number;
+}
+
+export interface SessionEnded {
+    kind: 'sessionEnded';
+    sessionId: string;
+}

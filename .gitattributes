@@ -7,3 +7,5 @@
 *.pdf  binary
 *.exe  binary
 *.dll  binary
+*.ico binary
+*.icns binary

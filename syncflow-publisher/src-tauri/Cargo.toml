@@ -24,8 +24,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 livekit-gstreamer = { workspace = true }
 dirs = "6.0.0"
+livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", features = ["rustls-tls-native-roots"] }
 syncflow_client = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="client" }
 syncflow_shared = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="shared" }
 thiserror = "2.0.12"
 gethostname = "1.0.2"
 local-ip-address = "0.6.5"
+amqprs = { version = "2.1.2", features = ["tls"] }
+tokio = { version = "1.47.1", features = ["full"] }
+rusoto_core = "0.48.0"
+rusoto_credential = "0.48.0"
+rusoto_s3 = "0.48.0"
+zip = "3.0"
+zip-extensions = "0.8.3"
+rand = "0.9.2"
+tokio-util = "0.7.16"
