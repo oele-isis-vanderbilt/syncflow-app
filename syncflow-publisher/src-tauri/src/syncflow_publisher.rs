@@ -238,10 +238,35 @@ pub async fn record_publish_to_syncflow(
         let failure_emitter = event_emitter.clone();
         let bucket_name = bucket_name.unwrap();
         let session_id_clone = session_id.clone();
+        let session_name_clone = session_details.session_name.clone();
+        let project_details = project_client.get_project_details().await;
+
+        if project_details.is_err() {
+            let _ = failure_emitter.emit(
+                "publication-notification",
+                PublicationNotification::Failure(FailureData {
+                    session_id: session_id.clone(),
+                    reason: project_details.err().unwrap().to_string(),
+                }),
+            );
+            return;
+        }
+
+        let project_details = project_details.unwrap();
+
+        let key = format!(
+            "{}-{}/{}/local-recordings/{}",
+            // ecojourneys-integration-f28cd098-a499-432e-99fc-d9ee46a6bfce
+            project_details.name,
+            project_details.id,
+            session_name_clone,
+            participant_name.replace(" ", "-").replace(".", "-"),
+        );
 
         let upload_handle = tauri::async_runtime::spawn(async move {
             println!("Starting upload to S3...");
-            let result = upload_to_s3(&to_zip_directory, &bucket_name, &s3_client, Some(tx)).await;
+            let result =
+                upload_to_s3(&to_zip_directory, &bucket_name, &key, &s3_client, Some(tx)).await;
             println!("Upload to S3 completed.");
             println!("Upload result: {:?}", result);
 
