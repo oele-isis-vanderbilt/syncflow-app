@@ -39,6 +39,7 @@ fn archive_directory(directory: &PathBuf, zip_path: &PathBuf) -> Result<PathBuf,
 pub async fn upload_to_s3(
     directory: &PathBuf,
     bucket: &str,
+    key: &str,
     s3_client: &S3Client,
     mut progress_emitter: Option<Sender<f32>>,
 ) -> Result<(), S3UploaderError> {
@@ -46,12 +47,12 @@ pub async fn upload_to_s3(
     archive_directory(directory, &zip_path)?;
 
     let mut file = TokioFile::open(&zip_path).await?;
-    let key = zip_path.file_name().unwrap().to_string_lossy().into_owned();
+    let key_with_extension = format!("{}.zip", key);
 
     let multipart = s3_client
         .create_multipart_upload(CreateMultipartUploadRequest {
             bucket: bucket.to_string(),
-            key: key.clone(),
+            key: key_with_extension.clone(),
             content_type: Some("application/zip".to_string()),
             ..Default::default()
         })
@@ -79,7 +80,7 @@ pub async fn upload_to_s3(
                 let resp = s3_client
                     .upload_part(rusoto_s3::UploadPartRequest {
                         bucket: bucket.to_string(),
-                        key: key.clone(),
+                        key: key_with_extension.clone(),
                         upload_id: upload_id.clone(),
                         part_number,
                         content_length: Some(filled as i64),
@@ -104,7 +105,7 @@ pub async fn upload_to_s3(
             let resp = s3_client
                 .upload_part(rusoto_s3::UploadPartRequest {
                     bucket: bucket.to_string(),
-                    key: key.clone(),
+                    key: key_with_extension.clone(),
                     upload_id: upload_id.clone(),
                     part_number,
                     content_length: Some(filled as i64),
@@ -140,7 +141,7 @@ pub async fn upload_to_s3(
     s3_client
         .complete_multipart_upload(rusoto_s3::CompleteMultipartUploadRequest {
             bucket: bucket.to_string(),
-            key: key.clone(),
+            key: key_with_extension,
             upload_id,
             multipart_upload: Some(completed_upload),
             ..Default::default()
