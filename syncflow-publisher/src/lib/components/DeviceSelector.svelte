@@ -129,6 +129,8 @@
     });
 
     let streamingDisabled = $state(false);
+
+    $inspect(selectedOption);
 </script>
 
 <div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100">
@@ -164,7 +166,11 @@
                 bind:value={selectedOption}
             />
             {#if selectedOption}
-                <Button color="blue" class="mt-2" onclick={() => addDevice(selectedOption!)}>
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
+                >
                     Add Audio Device
                 </Button>
             {/if}
@@ -176,7 +182,11 @@
                 bind:value={selectedOption}
             />
             {#if selectedOption}
-                <Button color="blue" class="mt-2" onclick={() => addDevice(selectedOption!)}>
+                <Button
+                    color="blue"
+                    class="mt-2"
+                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
+                >
                     Add Screen Device
                 </Button>
             {/if}
