@@ -355,7 +355,37 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
-        let broadcast_appsink = self.broadcast_appsink(tx, Some(&caps))?;
+        let stream_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("convert-app"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create convert for appsink".to_string())
+            })?;
+
+        let stream_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("stream-videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create stream videoscale".to_string())
+            })?;
+
+        let stream_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("format", VIDEO_FRAME_FORMAT)
+            .build();
+
+        let stream_capsfilter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("stream-capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create stream capsfilter".to_string())
+            })?;
+
+        stream_capsfilter.set_property("caps", &stream_caps);
+
+        let broadcast_appsink = self.broadcast_appsink(tx, Some(&stream_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-screen-share"));
 
@@ -367,6 +397,9 @@ impl GstMediaDevice {
                 &caps_filter,
                 &tee,
                 &queue_appsink,
+                &stream_convert,
+                &stream_scale,
+                &stream_capsfilter,
                 broadcast_appsink.upcast_ref(),
             ])
             .map_err(|_| {
@@ -388,8 +421,14 @@ impl GstMediaDevice {
             GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
         })?;
 
-        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+        gstreamer::Element::link_many([
+            &queue_appsink,
+            &stream_convert,
+            &stream_scale,
+            &stream_capsfilter,
+            broadcast_appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
 
         if let Some(ref path) = filename {
             self.add_video_file_branch(&pipeline, &tee, path)?;
