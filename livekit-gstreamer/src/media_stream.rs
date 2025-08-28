@@ -100,7 +100,7 @@ fn strict_sanitize_filename<S: AsRef<str>>(filename: S) -> String {
         })
         .collect::<String>();
 
-    // Return the last 10 characters of the sanitized filename appended with a hash of the original filename
+    // Return the last 10 characters of the sanitized filename appended with a random string
     if s.len() > 10 {
         let trimmed = &s[s.len().saturating_sub(10)..];
         random_string(trimmed)
