@@ -47,7 +47,7 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let publish_options1 = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "hw:4".to_string(),
+        device_id: "hw:1".to_string(),
         framerate: 96000,
         channels: 10,
         selected_channel: Some(1),
@@ -56,30 +56,13 @@ async fn main() -> Result<(), LKParticipantError> {
         }),
     };
 
-    let publish_options2 = AudioPublishOptions {
-        codec: "audio/x-raw".to_string(),
-        device_id: "hw:4".to_string(),
-        framerate: 96000,
-        channels: 10,
-        selected_channel: Some(2),
-        local_file_save_options: Some(LocalFileSaveOptions {
-            output_dir: "recordings".to_string(),
-        }),
-    };
-
     let mut stream1 = GstMediaStream::new(PublishOptions::Audio(publish_options1));
 
-    let mut stream2 = GstMediaStream::new(PublishOptions::Audio(publish_options2));
-
     stream1.start().await?;
-    stream2.start().await?;
 
     let mut participant = LKParticipant::new(new_room.clone());
     participant
         .publish_stream(&mut stream1, Some("UMC1820-Channel1".into()))
-        .await?;
-    participant
-        .publish_stream(&mut stream2, Some("UMC1820-Channel2".into()))
         .await?;
 
     log::info!(
@@ -88,5 +71,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    wait::wait_lk(&mut [stream1, stream2], new_room.clone(), &mut room_rx).await
+    wait::wait_lk(&mut [stream1], new_room.clone(), &mut room_rx).await
 }

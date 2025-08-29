@@ -12,6 +12,7 @@ authors = ["Umesh Timalsina <umesh.timalsina@vanderbilt.edu>"]
 
 [dependencies]
 chrono = "0.4.41"
+clap = { version = "4.5.46", features = ["derive"] }
 display-info = "0.5.4"
 gstreamer = "0.24.0"
 gstreamer-app = "0.24.0"
@@ -32,3 +33,8 @@ livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-
 syncflow_client = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="client" }
 syncflow_shared = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="shared" }
 amqprs = { version = "2.1.2", features = ["tls"] }
+rusoto_core = "0.48.0"
+rusoto_credential = "0.48.0"
+rusoto_s3 = "0.48.0"
+zip = "3.0"
+zip-extensions = "0.8.3"

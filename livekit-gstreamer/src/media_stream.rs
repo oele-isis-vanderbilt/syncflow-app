@@ -1,5 +1,7 @@
 use crate::{
-    media_device::{run_pipeline, GStreamerError, GstMediaDevice}, utils::random_string, RecordingMetadata
+    media_device::{run_pipeline, GStreamerError, GstMediaDevice},
+    utils::random_string,
+    RecordingMetadata,
 };
 use gstreamer::{prelude::*, Buffer, Pipeline};
 use serde::{Deserialize, Serialize};
