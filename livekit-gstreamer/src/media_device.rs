@@ -1,5 +1,6 @@
 use gstreamer::{prelude::*, Buffer};
 use gstreamer_app::AppSink;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,6 +48,7 @@ pub struct RecordingMetadata {
     end_time: Option<i64>,
     pub codec: String,
     pub audio_channel: Option<i32>,
+    pub device_name: Option<String>,
 }
 
 impl RecordingMetadata {
@@ -57,6 +59,7 @@ impl RecordingMetadata {
         media_type: String,
         codec: String,
         audio_channel: Option<i32>,
+        device_name: Option<String>,
     ) -> Self {
         RecordingMetadata {
             filename,
@@ -67,6 +70,7 @@ impl RecordingMetadata {
             end_time: None,
             codec,
             audio_channel,
+            device_name: device_name,
         }
     }
 
