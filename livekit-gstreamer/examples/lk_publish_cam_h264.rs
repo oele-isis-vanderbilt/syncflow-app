@@ -27,7 +27,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot h264")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "demo-room".to_string(),
+            room: "server-room3".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -42,9 +42,9 @@ async fn main() -> Result<(), LKParticipantError> {
     // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
     let mut stream = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
-        codec: "video/x-h264".to_string(),
-        width: 1920,
-        height: 1080,
+        codec: "video/x-raw".to_string(),
+        width: 960,
+        height: 540,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
         local_file_save_options: None,

@@ -1,5 +1,6 @@
 use gstreamer::{prelude::*, Buffer};
 use gstreamer_app::AppSink;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use crate::{get_gst_device, get_monitor};
 const SUPPORTED_VIDEO_CODECS: [&str; 3] = ["video/x-h264", "image/jpeg", "video/x-raw"];
 
 #[cfg(not(target_os = "macos"))]
-const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
+const SUPPORTED_VIDEO_CODECS: [&str; 3] = ["video/x-h264", "image/jpeg", "video/x-raw"];
 
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
 const VIDEO_FRAME_FORMAT: &str = "I420";
@@ -47,6 +48,7 @@ pub struct RecordingMetadata {
     end_time: Option<i64>,
     pub codec: String,
     pub audio_channel: Option<i32>,
+    pub device_name: Option<String>,
 }
 
 impl RecordingMetadata {
@@ -57,6 +59,7 @@ impl RecordingMetadata {
         media_type: String,
         codec: String,
         audio_channel: Option<i32>,
+        device_name: Option<String>,
     ) -> Self {
         RecordingMetadata {
             filename,
@@ -67,6 +70,7 @@ impl RecordingMetadata {
             end_time: None,
             codec,
             audio_channel,
+            device_name: device_name,
         }
     }
 
@@ -135,6 +139,10 @@ pub async fn run_pipeline(
     mut recording_metadata: Option<RecordingMetadata>,
 ) -> Result<(), GStreamerError> {
     let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
+
+    let master_clock = gstreamer::SystemClock::obtain();
+    pipeline.set_clock(Some(&master_clock));
+
 
     if recording_metadata.is_some() {
         let filesink = pipeline.iterate_elements().find(|e| {
@@ -679,6 +687,13 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create audioconvert".to_string())
             })?;
 
+        let resample = gstreamer::ElementFactory::make("audioresample")
+            .name(random_string("audioresample"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audioresample".to_string())
+            })?;
+
         let caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
             .field("channels", channels)
@@ -693,6 +708,16 @@ impl GstMediaDevice {
             })?;
 
         caps_element.set_property("caps", caps);
+
+        let audiorate = gstreamer::ElementFactory::make("audiorate")
+            .name(random_string("audiorate"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audiorate".to_string())
+            })?;
+
+        audiorate.set_property("tolerance", 40000000u64);
+        audiorate.set_property("skip-to-first", true);
 
         let tee = gstreamer::ElementFactory::make("tee")
             .name(random_string("tee"))
@@ -709,12 +734,12 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &convert, &caps_element, &tee])
+            .add_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &convert, &caps_element, &tee])
+        gstreamer::Element::link_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline

@@ -183,7 +183,8 @@ impl GstMediaStream {
                         "camera".into(),
                         "video".into(),
                         video_options.codec.clone(),
-                        None, // No audio channel for video
+                        None, // No audio channel for video,
+                        Some(device.display_name.clone()),
                     ));
 
                     filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
@@ -226,6 +227,7 @@ impl GstMediaStream {
                         "audio".into(),
                         audio_options.codec.clone(),
                         audio_options.selected_channel,
+                        Some(device.display_name.clone()),
                     ));
 
                     filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
@@ -269,6 +271,7 @@ impl GstMediaStream {
                         "video".into(),
                         screen_options.codec.clone(),
                         None,
+                        Some(device.display_name.clone()),
                     ));
                     filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
                 }
