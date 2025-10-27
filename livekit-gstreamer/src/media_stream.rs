@@ -151,7 +151,7 @@ impl GstMediaStream {
                 GstMediaDevice::from_device_path(video_options.device_id.as_str())?
             }
             PublishOptions::Audio(audio_options) => {
-                GstMediaDevice::from_device_path(audio_options.device_id.as_str())?
+                GstMediaDevice::from_alsa_path(audio_options.device_id.as_str())?
             }
             PublishOptions::Screen(screen_options) => {
                 GstMediaDevice::from_screen_id_or_name(&screen_options.screen_id_or_name)?

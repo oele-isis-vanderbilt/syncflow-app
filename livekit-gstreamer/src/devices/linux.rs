@@ -88,13 +88,20 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
 
         match props {
             Some(props) => {
-                // Try matching against multiple possible properties
                 let candidates = [
                     props.get::<Option<String>>("api.v4l2.path"),
                     props.get::<Option<String>>("device.string"),
                     props.get::<Option<String>>("device.path"),
                     props.get::<Option<String>>("api.alsa.path"),
+                    props
+                        .get::<i32>("alsa.card")
+                        .map(|c| Some(format!("hw:{}", c))),
                 ];
+                println!(
+                    "Device: {} candidates for matching: {:?}",
+                    d.display_name(),
+                    candidates
+                );
 
                 // Return true if any property matches the given path
                 candidates.iter().any(|res| {
@@ -150,7 +157,12 @@ pub fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
         caps.iter()
             .map(|s| {
                 let structure = s;
-                let channels = structure.get::<i32>("channels").unwrap_or(1);
+                let channels =
+                    if let Ok(range) = structure.get::<gstreamer::IntRange<i32>>("channels") {
+                        range.max()
+                    } else {
+                        structure.get::<i32>("channels").unwrap_or(1)
+                    };
 
                 if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate") {
                     let codec = structure.name().to_string();
@@ -177,11 +189,23 @@ fn get_device_path(device: &Device) -> Option<String> {
     if device.device_class() == "Video/Source" || device.device_class() == "Source/Video" {
         props.get::<Option<String>>("api.v4l2.path").ok()?
     } else if device.device_class() == "Audio/Source" || device.device_class() == "Source/Audio" {
-        // For audio devices, check for alsa path
-        props
-            .get::<Option<String>>("device.string")
-            .or(props.get::<Option<String>>("api.alsa.path"))
-            .ok()?
+        // For audio devices, try device.string, api.alsa.path, or alsa.card (as hw:<card>)
+        let path = props
+            .get::<String>("device.string")
+            .ok()
+            .or(props.get::<String>("api.alsa.path").ok())
+            .or(props
+                .get::<i32>("alsa.card")
+                .ok()
+                .map(|c| format!("hw:{}", c)));
+
+        println!(
+            "Display Name: {}, Device Path: {:?}",
+            device.display_name(),
+            path
+        );
+
+        path
     } else {
         None
     }
@@ -212,7 +236,9 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
         .into_iter()
         .filter_map(|d| {
             confirm_supported_api(&d)?;
+            println!("Supported device found: {}", d.display_name());
             let path = get_device_path(&d)?;
+            println!("Found device: {} - {}", d.display_name(), path);
             let caps = get_device_capabilities(&d);
             let display_name = d.display_name().into();
             let class = get_device_class(&d);
