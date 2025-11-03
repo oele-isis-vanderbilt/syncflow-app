@@ -31,19 +31,19 @@ pub fn get_s3_client(
     s3_access_key: &str,
     s3_secret_key: &str,
 ) -> S3Client {
-    let client = rusoto_core::HttpClient::new().expect("Failed to create request dispatcher");
+     let client = rusoto_core::HttpClient::new().expect("Failed to create request dispatcher");
     let region = rusoto_core::Region::Custom {
-        name: s3_region.to_string(),
-        endpoint: s3_endpoint.to_string(),
-    };
-    let credentials_provider = rusoto_credential::StaticProvider::new_minimal(
-        s3_access_key.to_string(),
-        s3_secret_key.to_string(),
-    );
+            name: s3_region.to_string(),
+            endpoint: s3_endpoint.to_string(),
+        };
+        let credentials_provider = rusoto_credential::StaticProvider::new_minimal(
+            s3_access_key.to_string(),
+            s3_secret_key.to_string(),
+        );
 
-    let s3_client = rusoto_s3::S3Client::new_with(client, credentials_provider, region);
+        let s3_client = rusoto_s3::S3Client::new_with(client, credentials_provider, region);
 
-    s3_client
+        s3_client
 }
 
 async fn register_device(
@@ -124,9 +124,9 @@ async fn publish_streams(
     device_id: &str,
     selected_channels: Vec<u32>,
 ) -> Result<(), Box<dyn Error>> {
-    let tk_request = TokenRequest {
-        identity: "umc1820".to_string(),
-        name: Some("UMC1820 Publisher".to_string()),
+    let tk_request_channel_1 = TokenRequest {
+        identity: "umc1820-channel-1".to_string(),
+        name: Some("UMC1820 Publisher Channel 1".to_string()),
         video_grants: VideoGrantsWrapper {
             room: session_message.session_name.clone(),
             can_publish: true,
@@ -136,23 +136,49 @@ async fn publish_streams(
         },
     };
 
-    let token = project_client
-        .generate_session_token(&session_message.session_id, &tk_request)
+    let tk_request_channel_rest = TokenRequest {
+        identity: "umc1820-multi-channel".to_string(),
+        name: Some("UMC1820 Publisher Multi Channel".to_string()),
+        video_grants: VideoGrantsWrapper {
+            room: session_message.session_name.clone(),
+            can_publish: true,
+            room_join: true,
+            room_create: false,
+            ..Default::default()
+        },
+    };
+
+    let token_channel_1 = project_client
+        .generate_session_token(&session_message.session_id, &tk_request_channel_1)
         .await?;
 
-    let (room, mut room_rx) = Room::connect(
-        &token.livekit_server_url.unwrap(),
-        &token.token,
+    let token_channel_rest = project_client
+        .generate_session_token(&session_message.session_id, &tk_request_channel_rest)
+        .await?;
+
+    let (room_channel_1, mut room_channel_1_rx) = Room::connect(
+        &token_channel_1.livekit_server_url.unwrap(),
+        &token_channel_1.token,
         RoomOptions::default(),
     )
     .await
     .unwrap();
 
-    let new_room = Arc::new(room);
-    let mut participant = LKParticipant::new(new_room.clone());
+    let (room_rest, mut room_rest_rx) = Room::connect(
+        &token_channel_rest.livekit_server_url.unwrap(),
+        &token_channel_rest.token,
+        RoomOptions::default(),
+    ).await.unwrap();
+
+    let new_room_channel_1 = Arc::new(room_channel_1);
+    let mut participant_channel_1 = LKParticipant::new(new_room_channel_1.clone());
     let session_id: &str = &session_message.session_id;
-    let session_name = new_room.name();
+    let session_name = new_room_channel_1.name();
     let op_dir = format!("recordings-umc-1820/{}-{}", session_name, session_id);
+
+    let new_room_rest = Arc::new(room_rest);
+    let mut participant_rest = LKParticipant::new(new_room_rest.clone());
+
 
     let stream_closure = |hw_id: &str, channel| {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
@@ -174,20 +200,27 @@ async fn publish_streams(
 
     for (stream, ch) in streams.iter_mut().zip(selected_channels.iter()) {
         stream.start().await?;
-        participant
-            .publish_stream(stream, Some(format!("umc-1820-channel-{}", ch).into()))
-            .await?;
+        if (*ch == 1) {
+            participant_channel_1
+                .publish_stream(stream, Some("UMC1820-Channel1".into()))
+                .await?;
+            continue;
+        } else {
+            participant_rest
+                .publish_stream(stream, Some(format!("UMC1820-Channel{}", ch)))
+                .await?;
+        }
     }
 
     log::info!(
         "Connected to room: {} - {}",
-        new_room.name(),
-        String::from(new_room.sid().await)
+        new_room_channel_1.name(),
+        String::from(new_room_channel_1.sid().await)
     );
 
     loop {
         tokio::select! {
-            msg = room_rx.recv() => {
+            msg = room_channel_1_rx.recv() => {
                 match msg {
                     Some(RoomEvent::Disconnected { reason }) => {
                         log::info!("Disconnected from room: {:?}", reason);
@@ -215,7 +248,8 @@ async fn publish_streams(
                 for stream in &mut streams {
                     stream.stop().await?;
                 }
-                new_room.close().await?;
+                new_room_channel_1.close().await?;
+                new_room_rest.close().await?;
                 log::info!("Disconnected from room");
                 break;
             }
@@ -233,7 +267,13 @@ async fn publish_streams(
             "umc1820".to_string()
         );
 
-        s3_uploader::upload_to_s3(&PathBuf::from(&op_dir), bucket, &key, s3_client, None).await;
+        s3_uploader::upload_to_s3(
+            &PathBuf::from(&op_dir),
+            bucket,
+            &key,
+            s3_client,
+            None
+        ).await;
     }
 
     Ok(())
@@ -270,8 +310,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let s3_access_key = env::var("S3_ACCESS_KEY").expect("S3_ACCESS_KEY is not set");
     let s3_secret_key = env::var("S3_SECRET_KEY").expect("S3_SECRET_KEY is not set");
     let hw_id = env::var("AUDIO_HW_ID").expect("AUDIO_HW_ID is not set");
-    let selected_channels =
-        env::var("AUDIO_SELECTED_CHANNELS").expect("AUDIO_SELECTED_CHANNELS is not set");
+    let selected_channels = env::var("AUDIO_SELECTED_CHANNELS").expect("AUDIO_SELECTED_CHANNELS is not set");
     let selected_channels: Vec<u32> = selected_channels
         .split(',')
         .filter_map(|s| s.trim().parse::<u32>().ok())
@@ -310,6 +349,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await;
     });
+
 
     loop {
         tokio::select! {
