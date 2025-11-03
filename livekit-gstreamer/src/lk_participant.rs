@@ -1,7 +1,7 @@
 use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
-use crate::AlsaMultiChannelMixStream;
+use crate::{AlsaMultiChannelMixStream, RtspStream};
 use gstreamer::Buffer;
 use livekit::options::{TrackPublishOptions, VideoCodec};
 use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, TrackSource};
@@ -101,6 +101,112 @@ impl LKParticipant {
         );
 
         Ok(track_sid)
+    }
+
+    pub async fn publish_rtsp_stream(
+        &mut self,
+        stream: &mut RtspStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            stream.start().await?;
+        }
+        // This unwrap is safe because we know the stream has started
+        let (frames_rx, close_rx) = stream.subscribe().unwrap();
+        let details = stream.details().unwrap();
+        let track_name = track_name.unwrap_or(stream.get_stream_location());
+
+        match details {
+            PublishOptions::Video(details) => {
+                let rtc_source = NativeVideoSource::new(VideoResolution {
+                    width: details.width as u32,
+                    height: details.height as u32,
+                });
+
+                let track = LocalVideoTrack::create_video_track(
+                    &track_name,
+                    RtcVideoSource::Native(rtc_source.clone()),
+                );
+
+                let track_sid = random_string("rtsp-video-track");
+
+                let task = tokio::spawn(Self::video_track_task(
+                    close_rx,
+                    frames_rx,
+                    rtc_source.clone(),
+                ));
+
+                self.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Video(track.clone()),
+                        TrackPublishOptions {
+                            source: TrackSource::Camera,
+                            simulcast: false,
+                            video_codec: VideoCodec::VP9,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                self.published_tracks.insert(
+                    track_sid.clone(),
+                    TrackHandle {
+                        track: LocalTrack::Video(track),
+                        task,
+                    },
+                );
+
+                Ok(track_sid)
+            }
+            PublishOptions::Audio(details) => {
+                let rtc_source = NativeAudioSource::new(
+                    Default::default(),
+                    details.framerate as u32,
+                    details.channels as u32,
+                    2000,
+                );
+
+                let track = LocalAudioTrack::create_audio_track(
+                    &track_name,
+                    RtcAudioSource::Native(rtc_source.clone()),
+                );
+
+                let track_sid = random_string("rtsp-audio-track");
+
+                let task = tokio::spawn(Self::audio_track_task(
+                    close_rx,
+                    frames_rx,
+                    rtc_source.clone(),
+                ));
+
+                self.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Audio(track.clone()),
+                        TrackPublishOptions {
+                            source: TrackSource::Microphone,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                self.published_tracks.insert(
+                    track_sid.clone(),
+                    TrackHandle {
+                        track: LocalTrack::Audio(track),
+                        task,
+                    },
+                );
+
+                Ok(track_sid)
+            }
+            PublishOptions::Screen(_) => {
+                Err(LKParticipantError::StreamingError(
+                    "Screen sharing not supported for RTSP streams".to_string(),
+                ))
+            }
+        }
     }
 
     pub async fn publish_stream(
@@ -297,6 +403,13 @@ impl LKParticipant {
 
                         let y_plane_size = (width * height) as usize;
                         let uv_plane_size = (width * height / 4) as usize;
+                        let expected_size = y_plane_size + 2 * uv_plane_size;
+                        
+                        if data.len() != expected_size {
+                            println!("Warning: Video frame size mismatch. Expected: {}, Got: {}, Resolution: {}x{}", 
+                                   expected_size, data.len(), width, height);
+                            continue;
+                        }
 
                         data_y.copy_from_slice(&data[0..y_plane_size]);
                         data_u.copy_from_slice(&data[y_plane_size..y_plane_size + uv_plane_size]);
