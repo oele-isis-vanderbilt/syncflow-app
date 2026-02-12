@@ -2,7 +2,7 @@ use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
 use gstreamer::Buffer;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{TrackPublishOptions, VideoCodec};
 use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, TrackSource};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::prelude::{
@@ -67,9 +67,13 @@ impl LKParticipant {
 
         match details {
             PublishOptions::Video(details) => {
+                // let rtc_source = NativeVideoSource::new(VideoResolution {
+                //     width: details.width as u32,
+                //     height: details.height as u32,
+                // });
                 let rtc_source = NativeVideoSource::new(VideoResolution {
-                    width: details.width as u32,
-                    height: details.height as u32,
+                    width: 640,
+                    height: 480,
                 });
 
                 let track = LocalVideoTrack::create_video_track(
@@ -91,6 +95,8 @@ impl LKParticipant {
                         LocalTrack::Video(track.clone()),
                         TrackPublishOptions {
                             source: TrackSource::Camera,
+                            simulcast: false,
+                            video_codec: VideoCodec::VP9,
                             ..Default::default()
                         },
                     )
@@ -157,9 +163,14 @@ impl LKParticipant {
                 Ok(track_sid)
             }
             PublishOptions::Screen(details) => {
+                // let rtc_source = NativeVideoSource::new(VideoResolution {
+                //     width: details.width as u32,
+                //     height: details.height as u32,
+                // });
+
                 let rtc_source = NativeVideoSource::new(VideoResolution {
-                    width: details.width as u32,
-                    height: details.height as u32,
+                    width: 640,
+                    height: 480,
                 });
 
                 let track = LocalVideoTrack::create_video_track(
@@ -181,6 +192,8 @@ impl LKParticipant {
                         LocalTrack::Video(track.clone()),
                         TrackPublishOptions {
                             source: TrackSource::Screenshare,
+                            simulcast: false,
+                            video_codec: VideoCodec::VP9,
                             ..Default::default()
                         },
                     )

@@ -1,5 +1,6 @@
 use gstreamer::{prelude::*, Buffer};
 use gstreamer_app::AppSink;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use crate::{get_gst_device, get_monitor};
 const SUPPORTED_VIDEO_CODECS: [&str; 3] = ["video/x-h264", "image/jpeg", "video/x-raw"];
 
 #[cfg(not(target_os = "macos"))]
-const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
+const SUPPORTED_VIDEO_CODECS: [&str; 3] = ["video/x-h264", "image/jpeg", "video/x-raw"];
 
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
 const VIDEO_FRAME_FORMAT: &str = "I420";
@@ -47,6 +48,7 @@ pub struct RecordingMetadata {
     end_time: Option<i64>,
     pub codec: String,
     pub audio_channel: Option<i32>,
+    pub device_name: Option<String>,
 }
 
 impl RecordingMetadata {
@@ -57,6 +59,7 @@ impl RecordingMetadata {
         media_type: String,
         codec: String,
         audio_channel: Option<i32>,
+        device_name: Option<String>,
     ) -> Self {
         RecordingMetadata {
             filename,
@@ -67,6 +70,7 @@ impl RecordingMetadata {
             end_time: None,
             codec,
             audio_channel,
+            device_name: device_name,
         }
     }
 
@@ -135,6 +139,10 @@ pub async fn run_pipeline(
     mut recording_metadata: Option<RecordingMetadata>,
 ) -> Result<(), GStreamerError> {
     let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
+
+    let master_clock = gstreamer::SystemClock::obtain();
+    pipeline.set_clock(Some(&master_clock));
+
 
     if recording_metadata.is_some() {
         let filesink = pipeline.iterate_elements().find(|e| {
@@ -355,7 +363,37 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
-        let broadcast_appsink = self.broadcast_appsink(tx, Some(&caps))?;
+        let stream_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("convert-app"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create convert for appsink".to_string())
+            })?;
+
+        let stream_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("stream-videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create stream videoscale".to_string())
+            })?;
+
+        let stream_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("format", VIDEO_FRAME_FORMAT)
+            .build();
+
+        let stream_capsfilter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("stream-capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create stream capsfilter".to_string())
+            })?;
+
+        stream_capsfilter.set_property("caps", &stream_caps);
+
+        let broadcast_appsink = self.broadcast_appsink(tx, Some(&stream_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-screen-share"));
 
@@ -367,6 +405,9 @@ impl GstMediaDevice {
                 &caps_filter,
                 &tee,
                 &queue_appsink,
+                &stream_convert,
+                &stream_scale,
+                &stream_capsfilter,
                 broadcast_appsink.upcast_ref(),
             ])
             .map_err(|_| {
@@ -388,8 +429,14 @@ impl GstMediaDevice {
             GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
         })?;
 
-        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+        gstreamer::Element::link_many([
+            &queue_appsink,
+            &stream_convert,
+            &stream_scale,
+            &stream_capsfilter,
+            broadcast_appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
 
         if let Some(ref path) = filename {
             self.add_video_file_branch(&pipeline, &tee, path)?;
@@ -640,6 +687,13 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create audioconvert".to_string())
             })?;
 
+        let resample = gstreamer::ElementFactory::make("audioresample")
+            .name(random_string("audioresample"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audioresample".to_string())
+            })?;
+
         let caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
             .field("channels", channels)
@@ -654,6 +708,16 @@ impl GstMediaDevice {
             })?;
 
         caps_element.set_property("caps", caps);
+
+        let audiorate = gstreamer::ElementFactory::make("audiorate")
+            .name(random_string("audiorate"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audiorate".to_string())
+            })?;
+
+        audiorate.set_property("tolerance", 40000000u64);
+        audiorate.set_property("skip-to-first", true);
 
         let tee = gstreamer::ElementFactory::make("tee")
             .name(random_string("tee"))
@@ -670,12 +734,12 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &convert, &caps_element, &tee])
+            .add_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &convert, &caps_element, &tee])
+        gstreamer::Element::link_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline
@@ -839,7 +903,36 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
-        let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
+        let stream_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
+        let stream_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoscale".to_string())
+            })?;
+
+        let stream_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("format", VIDEO_FRAME_FORMAT)
+            .build();
+
+        let stream_capsfilter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+        stream_capsfilter.set_property("caps", &stream_caps);
+
+        let appsink = self.broadcast_appsink(tx, Some(&stream_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-xraw"));
 
@@ -851,6 +944,9 @@ impl GstMediaDevice {
                 &caps_filter,
                 &tee,
                 &queue_appsink,
+                &stream_convert,
+                &stream_scale,
+                &stream_capsfilter,
                 appsink.upcast_ref(),
             ])
             .map_err(|_| {
@@ -872,8 +968,14 @@ impl GstMediaDevice {
             GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
         })?;
 
-        gstreamer::Element::link_many([&queue_appsink, appsink.upcast_ref()])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+        gstreamer::Element::link_many([
+            &queue_appsink,
+            &stream_convert,
+            &stream_scale,
+            &stream_capsfilter,
+            appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
 
         if let Some(ref path) = filename {
             self.add_video_file_branch(&pipeline, &tee, path)?;
@@ -1019,7 +1121,36 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
-        let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
+        let stream_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
+        let stream_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoscale".to_string())
+            })?;
+
+        let stream_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("format", VIDEO_FRAME_FORMAT)
+            .build();
+
+        let stream_capsfilter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+        stream_capsfilter.set_property("caps", &stream_caps);
+
+        let appsink = self.broadcast_appsink(tx, Some(&stream_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-jpeg"));
 
@@ -1032,6 +1163,9 @@ impl GstMediaDevice {
                 &caps_filter,
                 &tee,
                 &queue_appsink,
+                &stream_convert,
+                &stream_scale,
+                &stream_capsfilter,
                 appsink.upcast_ref(),
             ])
             .map_err(|_| {
@@ -1045,6 +1179,9 @@ impl GstMediaDevice {
             &caps_filter,
             &tee,
             &queue_appsink,
+            &stream_convert,
+            &stream_scale,
+            &stream_capsfilter,
             appsink.upcast_ref(),
         ])
         .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;

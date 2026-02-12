@@ -33,16 +33,16 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Microphone")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "DemoRoom".to_string(),
+            room: "server-room3".to_string(),
             ..Default::default()
         })
         .to_jwt()
         .unwrap();
 
-    let mut stream = if cfg!(target_os = "linux") {
+    let mut stream1 = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
-            device_id: "front:1".to_string(),
+            device_id: "hw:0".to_string(),
             framerate: 48000,
             channels: 1,
             selected_channel: None,
@@ -63,17 +63,46 @@ async fn main() -> Result<(), LKParticipantError> {
         }))
     };
 
+    let mut stream2 = if cfg!(target_os = "linux") {
+        GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
+            codec: "audio/x-raw".to_string(),
+            device_id: "hw:1".to_string(),
+            framerate: 48000,
+            channels: 1,
+            selected_channel: None,
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    } else {
+        GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
+            codec: "audio/x-raw".to_string(),
+            framerate: 48000,
+            device_id: r"\\?\SWD#MMDEVAPI#{0.0.1.00000000}.{400ac096-5f57-4207-87c5-b9d208f12749}#{2eef81be-33fa-4800-9670-1cd474972c3f}".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+            channels: 2,
+            selected_channel: Some(2)
+        }))
+    };
+
     let (room, mut room_rx) = Room::connect(&url, &token, RoomOptions::default())
         .await
         .unwrap();
 
     let new_room = Arc::new(room);
 
-    stream.start().await?;
+    stream1.start().await?;
+    stream2.start().await?;
 
     let mut participant = LKParticipant::new(new_room.clone());
 
-    participant.publish_stream(&mut stream, None).await?;
+    participant.publish_stream(&mut stream1, None).await?;
+    participant
+        .publish_stream(&mut stream2, None)
+        .await
+        .unwrap();
 
     log::info!(
         "Connected to room: {} - {}",
@@ -81,5 +110,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    wait::wait_lk(&mut [stream], new_room.clone(), &mut room_rx).await
+    wait::wait_lk(&mut [stream1, stream2], new_room.clone(), &mut room_rx).await
 }
