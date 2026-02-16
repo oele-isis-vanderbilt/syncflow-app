@@ -123,6 +123,10 @@ pub struct SingleContainerPipeline {
     pub metadata: Option<SingleContainerPipelineRecordingMetadata>,
 }
 
+struct PipelineDescription {
+    gst_launch_string: String,
+}
+
 impl SingleContainerPipeline {
     pub fn new(
         name: String,
@@ -143,7 +147,7 @@ impl SingleContainerPipeline {
     }
 
     #[cfg(target_os = "windows")]
-    pub fn build_pipeline_description(&self) -> String {
+    fn build_pipeline_description(&self) -> PipelineDescription {
         let output_file = format!(
             "{}/{}-{}.mkv",
             self.output_dir,
@@ -190,7 +194,7 @@ impl SingleContainerPipeline {
                 screen.height,
                 screen.framerate,
                 screen.bitrate / 1000,
-                screen.preset
+                screen.preset,
             );
             pipeline_parts.push(screen_branch);
         }
@@ -207,7 +211,6 @@ impl SingleContainerPipeline {
                 audio.sample_rate,
                 audio.bitrate
             );
-
             pipeline_parts.push(audio_branch);
         }
 
@@ -218,7 +221,10 @@ impl SingleContainerPipeline {
         );
 
         // Combine all parts
-        format!("{} {}", pipeline_parts.join(" "), muxer)
+        let gst_string = format!("{} {}", pipeline_parts.join(" "), muxer);
+        PipelineDescription {
+            gst_launch_string: gst_string,
+        }
     }
 
     pub fn initialize(&mut self) -> Result<(), GStreamerError> {
@@ -227,11 +233,15 @@ impl SingleContainerPipeline {
         }
 
         let pipeline_description = self.build_pipeline_description();
-        println!("Pipeline description: {}", pipeline_description);
+        println!(
+            "Pipeline description: {}",
+            pipeline_description.gst_launch_string
+        );
 
-        let pipeline = gstreamer::parse::launch(&pipeline_description).map_err(|e| {
-            GStreamerError::PipelineError(format!("Failed to create pipeline: {}", e))
-        })?;
+        let pipeline =
+            gstreamer::parse::launch(&pipeline_description.gst_launch_string).map_err(|e| {
+                GStreamerError::PipelineError(format!("Failed to create pipeline: {}", e))
+            })?;
 
         let pipeline_dc = pipeline
             .downcast::<gstreamer::Pipeline>()
