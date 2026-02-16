@@ -143,7 +143,6 @@ pub async fn run_pipeline(
     let master_clock = gstreamer::SystemClock::obtain();
     pipeline.set_clock(Some(&master_clock));
 
-
     if recording_metadata.is_some() {
         let filesink = pipeline.iterate_elements().find(|e| {
             let factory = e.factory();
@@ -712,9 +711,7 @@ impl GstMediaDevice {
         let audiorate = gstreamer::ElementFactory::make("audiorate")
             .name(random_string("audiorate"))
             .build()
-            .map_err(|_| {
-                GStreamerError::PipelineError("Failed to create audiorate".to_string())
-            })?;
+            .map_err(|_| GStreamerError::PipelineError("Failed to create audiorate".to_string()))?;
 
         audiorate.set_property("tolerance", 40000000u64);
         audiorate.set_property("skip-to-first", true);
@@ -734,13 +731,27 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
+            .add_many([
+                &audio_el,
+                &convert,
+                &resample,
+                &caps_element,
+                &audiorate,
+                &tee,
+            ])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        gstreamer::Element::link_many([
+            &audio_el,
+            &convert,
+            &resample,
+            &caps_element,
+            &audiorate,
+            &tee,
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline
             .add_many([&queue_appsink, broadcast_appsink.upcast_ref()])
