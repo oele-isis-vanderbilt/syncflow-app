@@ -21,33 +21,36 @@ fn main() -> Result<(), GStreamerError> {
     let video_config = vec![
         VideoTrackConfig {
             device_id: r"\\\\?\\usb#vid_1c45&pid_6200&mi_00#6&1b461b34&0&0000#{6994ad05-93ef-11d0-a3cc-00a0c9223196}\\global".to_string(),
+            device_name: Some("HD Pro Webcam C920".to_string()),
             width: 1920,
             height: 1080,
             framerate: 30,
-            bitrate: 8000000,
-            preset: "veryfast".to_string(),
+            bitrate: 4000000,
+            preset: "ultrafast".to_string(),
             camera_codec: "image/jpeg".to_string(),
         }
     ];
 
     let screen_config = vec![ScreenTrackConfig {
+        device_id: "screen:0".to_string(),
+        device_name: Some("Screen Capture".to_string()),
         width: 1920,
         height: 1080,
         framerate: 30,
-        bitrate: 8000000,
-        preset: "veryfast".to_string(),
+        bitrate: 4000000,
+        preset: "ultrafast".to_string(),
     }];
 
     let audio_tracks = vec![
         AudioTrackConfig {
-            device_id: r"{0.0.1.00000000}.{7aca3bda-52f4-46ac-90a6-d8bbd9cff454}".to_string(),
+            device_id: r"{0.0.1.00000000}.{632c169a-b754-45ef-86f5-ed6b73e606c3}".to_string(),
             device_name: Some("Microphone (USB Audio Device)".to_string()),
             bitrate: 128000,
             sample_rate: 48000,
             channels: 1,
         },
         AudioTrackConfig {
-            device_id: r"{0.0.1.00000000}.{0ef77635-3426-49fd-ae68-687626f31e83}".to_string(),
+            device_id: r"{0.0.1.00000000}.{d1e05b75-1b7c-442e-bdc8-e15fe7fbe710}".to_string(),
             device_name: Some("Microphone (USB Audio Device)".to_string()),
             bitrate: 128000,
             sample_rate: 48000,
@@ -68,7 +71,6 @@ fn main() -> Result<(), GStreamerError> {
         .expect("Failed to initialize pipeline");
 
     // Sleep 1 minute to check filename
-    std::thread::sleep(std::time::Duration::from_secs(60));
     pipeline.start().expect("Failed to start pipeline");
 
     // Wait for user input to stop the pipeline

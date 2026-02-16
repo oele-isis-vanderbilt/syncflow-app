@@ -1,7 +1,21 @@
 use gstreamer::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 
-use crate::GStreamerError;
+use crate::{
+    get_gst_device, utils::get_device_name, AudioPublishOptions, GStreamerError, GstMediaDevice,
+    ScreenPublishOptions, VideoPublishOptions,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SingleContainerPipelineRecordingMetadata {
+    pub device_names: Vec<String>,
+    pub video_configs: Vec<VideoTrackConfig>,
+    pub screen_configs: Vec<ScreenTrackConfig>,
+    pub audio_configs: Vec<AudioTrackConfig>,
+    pub start_time: Option<u64>,
+    pub error: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,30 +23,87 @@ pub struct AudioTrackConfig {
     pub device_id: String,
     pub device_name: Option<String>,
     pub sample_rate: i32,
-    pub bitrate: i32,  // e.g., 128000
-    pub channels: i32, // e.g., 2 for stereo
+    pub bitrate: i32,
+    pub channels: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoTrackConfig {
     pub device_id: String,
+    pub device_name: Option<String>,
     pub width: i32,
     pub height: i32,
     pub framerate: i32,
-    pub bitrate: i32,         // e.g., 4000 kbps
-    pub preset: String,       // e.g., "veryfast"
-    pub camera_codec: String, // e.g., "MJPEG" or "YUY2"
+    pub bitrate: i32,
+    pub preset: String,
+    pub camera_codec: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenTrackConfig {
+    pub device_id: String,
+    pub device_name: Option<String>,
     pub width: i32,
     pub height: i32,
     pub framerate: i32,
     pub bitrate: i32,   // e.g., 4000 kbps
     pub preset: String, // e.g., "veryfast"
+}
+
+impl TryFrom<VideoPublishOptions> for VideoTrackConfig {
+    type Error = GStreamerError;
+    fn try_from(options: VideoPublishOptions) -> Result<Self, Self::Error> {
+        let pixels_per_second = options.height * options.width * options.framerate;
+        let bits_per_pixel = 0.1; // ToDo: tune this constant
+        let bitrate = (pixels_per_second as f64 * bits_per_pixel) as i32;
+        let device_name = get_device_name(&options.device_id, false)?;
+        Ok(Self {
+            device_id: options.device_id,
+            device_name: Some(device_name),
+            width: options.width,
+            height: options.height,
+            framerate: options.framerate,
+            bitrate: bitrate.into(),
+            preset: "ultrafast".to_string(),
+            camera_codec: options.codec,
+        })
+    }
+}
+
+impl TryFrom<ScreenPublishOptions> for ScreenTrackConfig {
+    type Error = GStreamerError;
+    fn try_from(options: ScreenPublishOptions) -> Result<Self, Self::Error> {
+        let pixels_per_second = options.height * options.width * options.framerate;
+        let bits_per_pixel = 0.05; // Screens can often get away with lower bitrate
+        let bitrate = (pixels_per_second as f64 * bits_per_pixel) as i32;
+        let device_name = get_device_name(&options.screen_id_or_name, true)?;
+
+        Ok(Self {
+            device_id: options.screen_id_or_name,
+            device_name: Some(device_name),
+            width: options.width,
+            height: options.height,
+            framerate: options.framerate,
+            bitrate: bitrate.into(),
+            preset: "ultrafast".to_string(),
+        })
+    }
+}
+
+impl TryFrom<AudioPublishOptions> for AudioTrackConfig {
+    type Error = GStreamerError;
+    fn try_from(options: AudioPublishOptions) -> Result<Self, Self::Error> {
+        let device_name = get_device_name(&options.device_id, false)?;
+        Ok(Self {
+            device_id: options.device_id,
+            channels: options.channels,
+            sample_rate: options.framerate,
+            bitrate: 128000, // ToDo: make this configurable
+            device_name: Some(device_name),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +118,9 @@ pub struct SingleContainerPipeline {
     // Runtime state
     #[serde(skip)]
     pipeline: Option<gstreamer::Pipeline>,
+
+    #[serde(skip)]
+    pub metadata: Option<SingleContainerPipelineRecordingMetadata>,
 }
 
 impl SingleContainerPipeline {
@@ -123,7 +197,7 @@ impl SingleContainerPipeline {
 
         for (idx, audio) in self.audio_tracks.iter().enumerate() {
             let audio_branch = format!(
-                "wasapisrc device=\"{}\" low-latency=false buffer-time=200000 latency-time=10000 ! \
+                "wasapisrc exclusive=true device=\"{}\" low-latency=false buffer-time=200000 latency-time=10000 ! \
                 audioconvert ! audioresample ! audiorate ! \
                 audio/x-raw,channels={},rate={} ! \
                 queue ! \
@@ -189,6 +263,23 @@ impl SingleContainerPipeline {
             })?;
 
             // Todo: Error handling mid pipeline
+            self.metadata = Some(SingleContainerPipelineRecordingMetadata {
+                device_names: self
+                    .audio_tracks
+                    .iter()
+                    .filter_map(|a| a.device_name.clone())
+                    .collect(),
+                video_configs: self.video_config.clone(),
+                screen_configs: self.screen_config.clone(),
+                audio_configs: self.audio_tracks.clone(),
+                start_time: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ),
+                error: None,
+            });
 
             let (res, current, _) = pipeline.state(gstreamer::ClockTime::from_seconds(5));
             if let Some(clock) = pipeline.clock() {
@@ -237,6 +328,20 @@ impl SingleContainerPipeline {
             })?;
         }
         self.pipeline = None;
+        if self.metadata.is_some() {
+            let cloned_metadata = self.metadata.clone().unwrap();
+            // Write JSON metadata file
+            let metadata_path = format!(
+                "{}/{}-{}.json",
+                self.output_dir,
+                self.name,
+                chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+            );
+            let metadata_json = serde_json::to_string_pretty(&cloned_metadata).unwrap();
+            std::fs::write(&metadata_path, metadata_json).map_err(|e| {
+                GStreamerError::PipelineError(format!("Failed to write metadata file: {}", e))
+            })?;
+        }
         Ok(())
     }
 
