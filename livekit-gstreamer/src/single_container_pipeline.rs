@@ -147,7 +147,7 @@ impl SingleContainerPipeline {
     }
 
     #[cfg(target_os = "windows")]
-    fn build_pipeline_description(&self) -> PipelineDescription {
+    fn build_pipeline_description(&self) -> Result<PipelineDescription, GstreamerError> {
         let output_file = format!(
             "{}/{}-{}.mkv",
             self.output_dir,
@@ -222,9 +222,101 @@ impl SingleContainerPipeline {
 
         // Combine all parts
         let gst_string = format!("{} {}", pipeline_parts.join(" "), muxer);
-        PipelineDescription {
+        Ok(PipelineDescription {
             gst_launch_string: gst_string,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn build_pipeline_description(&self) -> Result<PipelineDescription, GStreamerError> {
+        let output_file = format!(
+            "{}/{}-{}.mkv",
+            self.output_dir,
+            self.name,
+            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+        );
+
+        let mut pipeline_parts = Vec::new();
+
+        for (idx, video) in self.video_config.iter().enumerate() {
+            use crate::get_devices_info;
+
+            let devices = get_devices_info();
+            let index = devices
+                .iter()
+                .position(|d| {
+                    video
+                        .device_name
+                        .as_ref()
+                        .is_some_and(|dn| dn == &d.display_name)
+                })
+                .ok_or(GStreamerError::DeviceError("No device found".into()))?;
+
+            let video_branch = format!(
+                "avfvideosrc device-index={} ! \
+                 {},width={},height={},framerate={}/1 ! \
+                 videoconvert ! \
+                 videorate ! \
+                 video/x-raw,width={},height={},framerate={}/1 ! \
+                 queue ! \
+                 x264enc bitrate={} speed-preset={} ! h264parse ! queue ! mux.",
+                index,
+                video.camera_codec,
+                video.width,
+                video.height,
+                video.framerate,
+                video.width,
+                video.height,
+                video.framerate,
+                video.bitrate / 1000, // Convert to kbps
+                video.preset
+            );
+            pipeline_parts.push(video_branch);
         }
+
+        for (idx, screen) in self.screen_config.iter().enumerate() {
+            let screen_branch = format!(
+                "avfvideosrc capture-screen=true capture-screen-cursor=true ! \
+                videoconvert ! videoscale ! videorate ! \
+                video/x-raw,width={},height={},framerate={}/1 ! \
+                queue ! \
+                x264enc bitrate={} speed-preset={} ! h264parse ! queue ! mux.",
+                screen.width,
+                screen.height,
+                screen.framerate,
+                screen.bitrate / 1000,
+                screen.preset,
+            );
+            pipeline_parts.push(screen_branch);
+        }
+
+        for (idx, audio) in self.audio_tracks.iter().enumerate() {
+            let audio_branch = format!(
+                "osxaudiosrc unique-id=\"{}\" ! \
+                audioconvert ! audioresample ! audiorate ! \
+                audio/x-raw,channels={},rate={} ! \
+                queue ! \
+                avenc_aac bitrate={} ! aacparse ! queue ! mux.",
+                audio.device_id,
+                audio.channels, // <-- just use channels directly
+                audio.sample_rate,
+                audio.bitrate
+            );
+            pipeline_parts.push(audio_branch);
+        }
+
+        // Muxer and sink
+        let muxer = format!(
+            "matroskamux name=mux ! filesink name=filesink0 location=\"{}\"",
+            output_file
+        );
+
+        // Combine all parts
+        let gst_string = format!("{} {}", pipeline_parts.join(" "), muxer);
+
+        Ok(PipelineDescription {
+            gst_launch_string: gst_string,
+        })
     }
 
     pub fn initialize(&mut self) -> Result<(), GStreamerError> {
@@ -232,7 +324,7 @@ impl SingleContainerPipeline {
             return Ok(());
         }
 
-        let pipeline_description = self.build_pipeline_description();
+        let pipeline_description = self.build_pipeline_description()?;
         println!(
             "Pipeline description: {}",
             pipeline_description.gst_launch_string
@@ -264,9 +356,14 @@ impl SingleContainerPipeline {
 
             pipeline
                 .set_state(gstreamer::State::Paused)
-                .map_err(|e| GStreamerError::PipelineError(format!("Failed to pause: {}", e)))?;
+                .map_err(|e| GStreamerError::PipelineError(format!("Failed to pause: {}", e)));
 
-            let (res, current, _pending) = pipeline.state(gstreamer::ClockTime::from_seconds(5));
+            let (res, current, _pending) = pipeline.state(gstreamer::ClockTime::from_seconds(20));
+
+            println!(
+                "Pipeline state change result: {:?}, current: {:?}, pending: {:?}",
+                res, current, _pending
+            );
 
             pipeline.set_state(gstreamer::State::Playing).map_err(|e| {
                 GStreamerError::PipelineError(format!("Failed to start pipeline: {}", e))
