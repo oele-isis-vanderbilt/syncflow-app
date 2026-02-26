@@ -143,7 +143,6 @@ pub async fn run_pipeline(
     let master_clock = gstreamer::SystemClock::obtain();
     pipeline.set_clock(Some(&master_clock));
 
-
     if recording_metadata.is_some() {
         let filesink = pipeline.iterate_elements().find(|e| {
             let factory = e.factory();
@@ -329,6 +328,13 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create videoconvert".to_string())
             })?;
 
+        let video_rate = gstreamer::ElementFactory::make("videorate")
+            .name(random_string("videorate"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create videorate".to_string()))?;
+
+        video_rate.set_property("max-rate", framerate);
+
         let video_scale = gstreamer::ElementFactory::make("videoscale")
             .name(random_string("videoscale"))
             .build()
@@ -401,6 +407,7 @@ impl GstMediaDevice {
             .add_many([
                 &element,
                 &video_convert,
+                &video_rate,
                 &video_scale,
                 &caps_filter,
                 &tee,
@@ -414,8 +421,15 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&element, &video_convert, &video_scale, &caps_filter, &tee])
-            .map_err(|e| GStreamerError::PipelineError(e.to_string()))?;
+        gstreamer::Element::link_many([
+            &element,
+            &video_convert,
+            &video_rate,
+            &video_scale,
+            &caps_filter,
+            &tee,
+        ])
+        .map_err(|e| GStreamerError::PipelineError(e.to_string()))?;
 
         let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
             GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
@@ -712,9 +726,7 @@ impl GstMediaDevice {
         let audiorate = gstreamer::ElementFactory::make("audiorate")
             .name(random_string("audiorate"))
             .build()
-            .map_err(|_| {
-                GStreamerError::PipelineError("Failed to create audiorate".to_string())
-            })?;
+            .map_err(|_| GStreamerError::PipelineError("Failed to create audiorate".to_string()))?;
 
         audiorate.set_property("tolerance", 40000000u64);
         audiorate.set_property("skip-to-first", true);
@@ -734,13 +746,27 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
+            .add_many([
+                &audio_el,
+                &convert,
+                &resample,
+                &caps_element,
+                &audiorate,
+                &tee,
+            ])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &convert, &resample, &caps_element, &audiorate, &tee])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        gstreamer::Element::link_many([
+            &audio_el,
+            &convert,
+            &resample,
+            &caps_element,
+            &audiorate,
+            &tee,
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline
             .add_many([&queue_appsink, broadcast_appsink.upcast_ref()])
@@ -880,6 +906,13 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create videoconvert".to_string())
             })?;
 
+        let rate = gstreamer::ElementFactory::make("videorate")
+            .name(random_string("videorate"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create videorate".to_string()))?;
+
+        rate.set_property("max-rate", framerate);
+
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
@@ -940,6 +973,7 @@ impl GstMediaDevice {
             .add_many([
                 &input,
                 &convert,
+                &rate,
                 &caps_element,
                 &caps_filter,
                 &tee,
@@ -953,7 +987,7 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&input, &convert, &caps_element, &caps_filter, &tee])
+        gstreamer::Element::link_many([&input, &convert, &rate, &caps_element, &caps_filter, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
@@ -1098,6 +1132,12 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create videoconvert".to_string())
             })?;
 
+        let rate = gstreamer::ElementFactory::make("videorate")
+            .name(random_string("videorate"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create videorate".to_string()))?;
+        rate.set_property("max-rate", framerate);
+
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
@@ -1160,6 +1200,7 @@ impl GstMediaDevice {
                 &caps_element,
                 &jpegdec,
                 &convert,
+                &rate,
                 &caps_filter,
                 &tee,
                 &queue_appsink,
@@ -1176,6 +1217,7 @@ impl GstMediaDevice {
             &caps_element,
             &jpegdec,
             &convert,
+            &rate,
             &caps_filter,
             &tee,
             &queue_appsink,
