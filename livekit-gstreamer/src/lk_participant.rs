@@ -1,6 +1,7 @@
 use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
+use gstreamer::prelude::ClockExt;
 use gstreamer::Buffer;
 use livekit::options::{TrackPublishOptions, VideoCodec};
 use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, TrackSource};
@@ -37,6 +38,8 @@ impl From<RoomError> for LKParticipantError {
 pub struct LKParticipant {
     room: Arc<Room>,
     published_tracks: HashMap<String, TrackHandle>,
+    master_clock: gstreamer::Clock,  // shared clock
+    base_time: gstreamer::ClockTime, // shared base time
 }
 
 struct TrackHandle {
@@ -46,9 +49,13 @@ struct TrackHandle {
 
 impl LKParticipant {
     pub fn new(room: Arc<Room>) -> Self {
+        let master_clock = gstreamer::SystemClock::obtain();
+        let base_time = master_clock.time(); // snapshot once at construction
         Self {
             room,
             published_tracks: HashMap::new(),
+            master_clock,
+            base_time,
         }
     }
 
@@ -58,7 +65,9 @@ impl LKParticipant {
         track_name: Option<String>,
     ) -> Result<String, LKParticipantError> {
         if !stream.has_started() {
-            stream.start().await?;
+            stream
+                .start_with_clock(self.master_clock.clone(), self.base_time)
+                .await?;
         }
         // This unwrap is safe because we know the stream has started
         let (frames_rx, close_rx) = stream.subscribe().unwrap();
