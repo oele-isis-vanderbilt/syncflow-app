@@ -59,6 +59,18 @@ impl LKParticipant {
         }
     }
 
+    pub async fn start_stream(
+        &mut self,
+        stream: &mut GstMediaStream,
+    ) -> Result<(), LKParticipantError> {
+        if !stream.has_started() {
+            stream
+                .start_with_clock(self.master_clock.clone(), self.base_time)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn publish_stream(
         &mut self,
         stream: &mut GstMediaStream,
@@ -72,7 +84,10 @@ impl LKParticipant {
         // This unwrap is safe because we know the stream has started
         let (frames_rx, close_rx) = stream.subscribe().unwrap();
         let details = stream.details().unwrap();
-        let track_name = track_name.unwrap_or(stream.get_device_name().unwrap());
+        let device_name = stream
+            .get_device_name()
+            .unwrap_or("Unknown Device".to_string());
+        let track_name = format!("{}-{}", self.room.local_participant().name(), device_name);
 
         match details {
             PublishOptions::Video(details) => {

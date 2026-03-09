@@ -165,13 +165,13 @@ pub async fn record_publish_to_syncflow(
     let mut all_failures = vec![];
 
     for (stream, enable_streaming) in streams_and_recording_config.iter_mut() {
-        stream.start().await.unwrap();
         if *enable_streaming {
-            let device_name = stream
-                .get_device_name()
-                .unwrap_or("Unknown Device".to_string());
-            let track_name = format!("{}-{}", participant_name, device_name);
-            let result = participant.publish_stream(stream, Some(track_name)).await;
+            let result = participant.publish_stream(stream, None).await;
+            if let Err(e) = result {
+                all_failures.push(e.to_string());
+            }
+        } else {
+            let result = participant.start_stream(stream).await;
             if let Err(e) = result {
                 all_failures.push(e.to_string());
             }

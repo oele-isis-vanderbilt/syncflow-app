@@ -166,7 +166,7 @@ pub async fn run_pipeline(
             GStreamerError::PipelineError("Failed to set custom clock on pipeline".to_string())
         })?;
         pipeline.set_base_time(base_time);
-        pipeline.set_start_time(gstreamer::ClockTime::NONE);
+        // pipeline.set_start_time(gstreamer::ClockTime::NONE); --- IGNORE ---
     } else {
         let master_clock = gstreamer::SystemClock::obtain();
         pipeline.set_clock(Some(&master_clock)).map_err(|_| {
