@@ -140,6 +140,174 @@ impl GstMediaStream {
         Ok(())
     }
 
+    pub async fn start_with_clock(
+        &mut self,
+        clock: gstreamer::Clock,
+        base_time: gstreamer::ClockTime,
+    ) -> Result<(), GStreamerError> {
+        self.stop().await?;
+        let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
+        let (close_tx, _) = broadcast::channel::<()>(1);
+
+        let device = match &self.publish_options {
+            PublishOptions::Video(video_options) => {
+                GstMediaDevice::from_device_path(video_options.device_id.as_str())?
+            }
+            PublishOptions::Audio(audio_options) => {
+                GstMediaDevice::from_device_path(audio_options.device_id.as_str())?
+            }
+            PublishOptions::Screen(screen_options) => {
+                GstMediaDevice::from_screen_id_or_name(&screen_options.screen_id_or_name)?
+            }
+        };
+
+        let frame_tx_arc = Arc::new(frame_tx.clone());
+        let mut metadata = None;
+
+        let pipeline = match &self.publish_options {
+            PublishOptions::Video(video_options) => {
+                let mut filename = None;
+                if let Some(local_file_save_options) = &video_options.local_file_save_options {
+                    let op_dir = create_dir(local_file_save_options).await?;
+                    let filename_str = format!(
+                        "{}-{}-{}-{}.mp4",
+                        "video",
+                        device.display_name.replace(" ", "_"),
+                        strict_sanitize_filename(&video_options.device_id),
+                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "camera".into(),
+                        "video".into(),
+                        video_options.codec.clone(),
+                        None, // No audio channel for video,
+                        Some(device.display_name.clone()),
+                    ));
+
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
+                }
+                device.video_pipeline(
+                    &video_options.codec,
+                    video_options.width,
+                    video_options.height,
+                    video_options.framerate,
+                    frame_tx_arc.clone(),
+                    filename,
+                )?
+            }
+            PublishOptions::Audio(audio_options) => {
+                let mut filename = None;
+                if let Some(local_file_save_options) = &audio_options.local_file_save_options {
+                    let op_dir = create_dir(local_file_save_options).await?;
+                    let filename_str = format!(
+                        "{}-{}-{}-{}.m4a",
+                        "audio",
+                        match audio_options.selected_channel {
+                            Some(channel) => format!(
+                                "{}-{}",
+                                strict_sanitize_filename(&device.display_name),
+                                channel
+                            ),
+                            None => strict_sanitize_filename(&device.display_name),
+                        },
+                        strict_sanitize_filename(&audio_options.device_id),
+                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "microphone".into(),
+                        "audio".into(),
+                        audio_options.codec.clone(),
+                        audio_options.selected_channel,
+                        Some(device.display_name.clone()),
+                    ));
+
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
+                }
+                match audio_options.selected_channel {
+                    Some(selected_channel) => device.deinterleaved_audio_pipeline(
+                        &audio_options.codec,
+                        audio_options.channels,
+                        selected_channel,
+                        audio_options.framerate,
+                        frame_tx_arc.clone(),
+                        filename,
+                    )?,
+                    None => device.audio_pipeline(
+                        &audio_options.codec,
+                        audio_options.channels,
+                        audio_options.framerate,
+                        frame_tx_arc.clone(),
+                        filename,
+                    )?,
+                }
+            }
+            PublishOptions::Screen(screen_options) => {
+                let mut filename = None;
+                if let Some(local_file_save_options) = &screen_options.local_file_save_options {
+                    let op_dir = create_dir(local_file_save_options).await?;
+                    let filename_str = format!(
+                        "{}-{}-{}.mp4",
+                        "screen-share",
+                        screen_options.screen_id_or_name.replace(" ", "_"),
+                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "screen-share".into(),
+                        "video".into(),
+                        screen_options.codec.clone(),
+                        None,
+                        Some(device.display_name.clone()),
+                    ));
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
+                }
+                device.screen_share_pipeline(
+                    &screen_options.codec,
+                    screen_options.width,
+                    screen_options.height,
+                    screen_options.framerate,
+                    frame_tx_arc.clone(),
+                    filename,
+                )?
+            }
+        };
+
+        let pipline_task = tokio::spawn(run_pipeline(
+            pipeline.clone(),
+            close_tx.clone(),
+            metadata.clone(),
+            Some(clock),     // Pass the custom clock
+            Some(base_time), // Pass the custom base time
+        ));
+
+        let handle = StreamHandle {
+            close_tx,
+            frame_tx,
+            task: pipline_task,
+            pipeline,
+            device,
+        };
+        self.handle = Some(handle);
+        Ok(())
+    }
+
     pub async fn start(&mut self) -> Result<(), GStreamerError> {
         self.stop().await?;
 
@@ -290,6 +458,8 @@ impl GstMediaStream {
             pipeline.clone(),
             close_tx.clone(),
             metadata.clone(),
+            None, // No custom clock for this start method
+            None, // No custom base time for this start method
         ));
 
         let handle = StreamHandle {
