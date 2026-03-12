@@ -49,6 +49,8 @@ pub struct RecordingMetadata {
     pub codec: String,
     pub audio_channel: Option<i32>,
     pub device_name: Option<String>,
+    pub base_time: Option<i64>,
+    pub first_pts: Option<i64>,
 }
 
 impl RecordingMetadata {
@@ -71,7 +73,17 @@ impl RecordingMetadata {
             codec,
             audio_channel,
             device_name: device_name,
+            base_time: None,
+            first_pts: None,
         }
+    }
+
+    pub fn set_base_time(&mut self, base_time: i64) {
+        self.base_time = Some(base_time);
+    }
+
+    pub fn set_first_pts(&mut self, first_pts: i64) {
+        self.first_pts = Some(first_pts);
     }
 
     pub fn set_start_time(&mut self, time: i64) {
@@ -166,6 +178,9 @@ pub async fn run_pipeline(
             GStreamerError::PipelineError("Failed to set custom clock on pipeline".to_string())
         })?;
         pipeline.set_base_time(base_time);
+        if let Some(metadata) = recording_metadata.as_mut() {
+            metadata.set_base_time(base_time.nseconds() as i64);
+        }
         // pipeline.set_start_time(gstreamer::ClockTime::NONE); --- IGNORE ---
     } else {
         let master_clock = gstreamer::SystemClock::obtain();
@@ -174,23 +189,36 @@ pub async fn run_pipeline(
         })?;
     }
 
-    // Step 4: attach filesink probe
+    // Step 4: attach tee probe instead of filesink/encoder
     if recording_metadata.is_some() {
-        let filesink = pipeline.iterate_elements().find(|e| {
-            let factory = e.factory();
-            factory.map(|f| f.name() == *"filesink").unwrap_or(false)
-        });
-        if let Some(filesink) = filesink {
+        let tee = pipeline
+            .iterate_elements()
+            .find(|e| e.factory().map(|f| f.name() == "tee").unwrap_or(false));
+        if let Some(tee) = tee {
             let timing_clone = timing.clone();
-            if let Some(sink_pad) = filesink.static_pad("sink") {
-                sink_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, info| {
+            if let Some(src_pad) = tee.static_pad("sink") {
+                // sink pad = first buffer in
+                src_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |pad, info| {
                     if let Some(gstreamer::PadProbeData::Buffer(ref buffer)) = info.data {
-                        if buffer.pts().is_some() {
+                        let pts = buffer
+                            .pts()
+                            .filter(|p| p.nseconds() > 0) // treat zero as missing
+                            .or_else(|| {
+                                #[cfg(target_os = "windows")]
+                                {
+                                    pad.parent_element().and_then(|e| e.current_running_time())
+                                }
+                                #[cfg(not(target_os = "windows"))]
+                                {
+                                    None
+                                }
+                            });
+                        if let Some(pts) = pts {
                             let mut timing = timing_clone.lock().unwrap();
                             if timing.start_time.is_none() {
-                                timing.start_time = Some(system_time_nanos());
+                                timing.start_time = Some(pts.nseconds() as i64);
                             }
-                            timing.end_time = Some(system_time_nanos());
+                            timing.end_time = Some(pts.nseconds() as i64);
                         }
                     }
                     gstreamer::PadProbeReturn::Ok
@@ -198,7 +226,6 @@ pub async fn run_pipeline(
             }
         }
     }
-
     // Step 5: transition to Playing then run bus loop — all blocking, off the executor
     let pipeline_clone = pipeline.clone();
     let timing_clone = timing.clone();
@@ -225,6 +252,7 @@ pub async fn run_pipeline(
                             metadata.set_end_time(system_time_nanos());
                             if let Some(start_time) = timing_clone.lock().unwrap().start_time {
                                 metadata.set_start_time(start_time);
+                                metadata.set_first_pts(start_time);
                             }
                             if let Some(end_time) = timing_clone.lock().unwrap().end_time {
                                 metadata.set_end_time(end_time);
@@ -242,7 +270,7 @@ pub async fn run_pipeline(
                     MessageView::StateChanged(e) => {
                         if let Some(metadata) = recording_metadata.as_mut() {
                             if e.current() == gstreamer::State::Playing {
-                                metadata.set_start_time(system_time_nanos());
+                                // metadata.set_start_time(system_time_nanos());
                             }
                         }
                         if e.current() == gstreamer::State::Null {
@@ -758,7 +786,7 @@ impl GstMediaDevice {
             .map_err(|_| GStreamerError::PipelineError("Failed to create audiorate".to_string()))?;
 
         audiorate.set_property("tolerance", 40000000u64);
-        audiorate.set_property("skip-to-first", true);
+        // audiorate.set_property("skip-to-first", true);
 
         let tee = gstreamer::ElementFactory::make("tee")
             .name(random_string("tee"))
