@@ -199,8 +199,9 @@ pub fn set_pipeline_clock(
         .map_err(|_| GStreamerError::PipelineError("Failed to set clock".to_string()))?;
     pipeline.set_base_time(base_time);
 
-    #[cfg(not(target_os = "windows"))]
-    // FixMe: This never works with wasapi2 on Windows, need to investigate why
+    // FixMe: This never works with wasapi2 on Windows and Macos, need to investigate why
+    // Only enable for linux
+    #[cfg(target_os = "linux")]
     pipeline.set_start_time(gstreamer::ClockTime::NONE);
 
     if let Some(meta) = metadata {
@@ -966,12 +967,12 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to create videoconvert".to_string())
             })?;
 
-        let rate = gstreamer::ElementFactory::make("videorate")
-            .name(random_string("videorate"))
-            .build()
-            .map_err(|_| GStreamerError::PipelineError("Failed to create videorate".to_string()))?;
+        // let rate = gstreamer::ElementFactory::make("videorate")
+        //     .name(random_string("videorate"))
+        //     .build()
+        //     .map_err(|_| GStreamerError::PipelineError("Failed to create videorate".to_string()))?;
 
-        rate.set_property("max-rate", framerate);
+        // rate.set_property("max-rate", framerate);
 
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
@@ -1033,7 +1034,7 @@ impl GstMediaDevice {
             .add_many([
                 &input,
                 &convert,
-                &rate,
+                // &rate,
                 &caps_element,
                 &caps_filter,
                 &tee,
@@ -1047,7 +1048,7 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&input, &convert, &rate, &caps_element, &caps_filter, &tee])
+        gstreamer::Element::link_many([&input, &convert, &caps_element, &caps_filter, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
@@ -1086,7 +1087,6 @@ impl GstMediaDevice {
 
         Ok(pipeline)
     }
-
     fn video_xh264_pipeline(
         &self,
         width: i32,
