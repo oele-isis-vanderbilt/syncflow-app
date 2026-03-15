@@ -47,6 +47,11 @@ struct TrackHandle {
     task: tokio::task::JoinHandle<()>,
 }
 
+pub struct StreamingHandlingConfig {
+    pub gst_media_stream: GstMediaStream,
+    pub publish_to_livekit: bool,
+}
+
 impl LKParticipant {
     pub fn new(room: Arc<Room>) -> Self {
         let master_clock = gstreamer::SystemClock::obtain();
@@ -68,6 +73,52 @@ impl LKParticipant {
                 .start_with_clock(self.master_clock.clone(), self.base_time)
                 .await?;
         }
+        Ok(())
+    }
+
+    pub async fn handle_streams(
+        &mut self,
+        configs: &mut [StreamingHandlingConfig],
+    ) -> Result<(), LKParticipantError> {
+        let mut recording_metadatas = vec![];
+
+        for config in configs.iter_mut() {
+            let (_, metadata) = config.gst_media_stream.build_pipeline().await?;
+            recording_metadatas.push(metadata);
+        }
+
+        let preroll_futures: Vec<_> = configs
+            .iter_mut()
+            .map(|config| config.gst_media_stream.preroll_pipeline())
+            .collect();
+
+        futures::future::try_join_all(preroll_futures).await?;
+
+        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
+            config.gst_media_stream.set_pipeline_clock(
+                &self.master_clock,
+                self.base_time,
+                metadata.as_mut(),
+            )?;
+        }
+
+        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
+            config.gst_media_stream.play_pipeline(metadata.as_mut())?;
+        }
+
+        let bus_loop_futures: Vec<_> = configs
+            .iter_mut()
+            .zip(recording_metadatas.iter_mut())
+            .map(|(config, metadata)| config.gst_media_stream.run_bus_loop(metadata.as_mut()))
+            .collect();
+
+        futures::future::try_join_all(bus_loop_futures).await?;
+
+        for config in configs.iter_mut().filter(|c| c.publish_to_livekit) {
+            self.publish_stream(&mut config.gst_media_stream, None)
+                .await?;
+        }
+
         Ok(())
     }
 

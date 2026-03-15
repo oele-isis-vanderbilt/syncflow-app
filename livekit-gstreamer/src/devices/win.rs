@@ -18,13 +18,7 @@ static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     Arc::new(Mutex::new(monitor))
 });
 
-const SUPPORTED_APIS: [&str; 5] = [
-    "wasapi",
-    "mediafoundation",
-    "directshow",
-    "dshow",
-    "wasapi2",
-];
+const SUPPORTED_APIS: [&str; 4] = ["wasapi2", "mediafoundation", "directshow", "dshow"];
 
 pub fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();

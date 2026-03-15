@@ -6,7 +6,9 @@ use crate::{
 };
 use livekit::{participant, Room, RoomOptions};
 use livekit_gstreamer::utils::system_time_nanos;
-use livekit_gstreamer::{lk_participant, GstMediaStream, LocalFileSaveOptions, PublishOptions};
+use livekit_gstreamer::{
+    lk_participant, GstMediaStream, LocalFileSaveOptions, PublishOptions, StreamingHandlingConfig,
+};
 use serde::{Deserialize, Serialize};
 use syncflow_shared::{
     device_models::NewSessionMessage,
@@ -164,18 +166,18 @@ pub async fn record_publish_to_syncflow(
 
     let mut all_failures = vec![];
 
-    for (stream, enable_streaming) in streams_and_recording_config.iter_mut() {
-        if *enable_streaming {
-            let result = participant.publish_stream(stream, None).await;
-            if let Err(e) = result {
-                all_failures.push(e.to_string());
-            }
-        } else {
-            let result = participant.start_stream(stream).await;
-            if let Err(e) = result {
-                all_failures.push(e.to_string());
-            }
-        }
+    let mut streaming_configs: Vec<StreamingHandlingConfig> = streams_and_recording_config
+        .into_iter()
+        .map(|(stream, enable_streaming)| StreamingHandlingConfig {
+            gst_media_stream: stream,
+            publish_to_livekit: enable_streaming,
+        })
+        .collect();
+
+    let result = participant.handle_streams(&mut streaming_configs).await;
+
+    if let Err(e) = result {
+        all_failures.push(e.to_string());
     }
 
     if !all_failures.is_empty() {
@@ -195,9 +197,9 @@ pub async fn record_publish_to_syncflow(
                 session_id: session_id.clone(),
                 session_name: session_details.session_name.clone(),
                 started_at: system_time_nanos().to_string(),
-                devices: streams_and_recording_config
+                devices: streaming_configs
                     .iter()
-                    .filter_map(|(stream, _)| stream.get_device_name())
+                    .filter_map(|config| config.gst_media_stream.get_device_name())
                     .collect(),
             }),
         );
@@ -207,8 +209,8 @@ pub async fn record_publish_to_syncflow(
         match msg {
             livekit::RoomEvent::Disconnected { reason } => {
                 println!("Disconnected from room: {:?}", reason);
-                for stream in streams_and_recording_config.iter_mut() {
-                    stream.0.stop().await.unwrap();
+                for config in streaming_configs.iter_mut() {
+                    config.gst_media_stream.stop().await.unwrap();
                 }
                 let _ = event_emitter.emit(
                     "publication-notification",

@@ -1,3 +1,4 @@
+use gstreamer::prelude::ClockExt;
 use livekit_gstreamer::{
     AudioPublishOptions, GStreamerError, GstMediaStream, LocalFileSaveOptions, PublishOptions,
     VideoPublishOptions,
@@ -15,9 +16,9 @@ async fn main() -> Result<(), GStreamerError> {
     let mut audio_stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
-            device_id: "front:1".to_string(),
+            device_id: "front:0".to_string(),
             framerate: 48000,
-            channels: 1,
+            channels: 2,
             selected_channel: None,
             local_file_save_options: Some(LocalFileSaveOptions {
                 output_dir: "recordings".to_string(),
@@ -85,9 +86,14 @@ async fn main() -> Result<(), GStreamerError> {
         }))
     };
 
-    video_stream.start().await.unwrap();
+    let clock = gstreamer::SystemClock::obtain();
+    let base_time = clock.time();
 
-    audio_stream.start().await?;
+    video_stream
+        .start_with_clock(clock.clone(), base_time)
+        .await?;
+
+    audio_stream.start_with_clock(clock, base_time).await?;
 
     let (audio_frame_rx, audio_close_rx) = audio_stream.subscribe().unwrap();
     let (video_frame_rx, video_close_rx) = video_stream.subscribe().unwrap();
