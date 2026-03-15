@@ -198,6 +198,9 @@ pub fn set_pipeline_clock(
         .set_clock(Some(clock))
         .map_err(|_| GStreamerError::PipelineError("Failed to set clock".to_string()))?;
     pipeline.set_base_time(base_time);
+
+    #[cfg(not(target_os = "windows"))]
+    // FixMe: This never works with wasapi2 on Windows, need to investigate why
     pipeline.set_start_time(gstreamer::ClockTime::NONE);
 
     if let Some(meta) = metadata {
@@ -206,10 +209,17 @@ pub fn set_pipeline_clock(
     Ok(())
 }
 
-pub fn play_pipeline(pipeline: &gstreamer::Pipeline) -> Result<(), GStreamerError> {
+pub fn play_pipeline(
+    pipeline: &gstreamer::Pipeline,
+    metadata: Option<&mut RecordingMetadata>,
+) -> Result<(), GStreamerError> {
     pipeline
         .set_state(gstreamer::State::Playing)
         .map_err(|_| GStreamerError::PipelineError("Failed to set Playing".to_string()))?;
+
+    if let Some(meta) = metadata {
+        meta.set_start_time(system_time_nanos());
+    }
     Ok(())
 }
 

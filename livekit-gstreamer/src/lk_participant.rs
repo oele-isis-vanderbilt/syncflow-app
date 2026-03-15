@@ -102,8 +102,8 @@ impl LKParticipant {
             )?;
         }
 
-        for config in configs.iter_mut() {
-            config.gst_media_stream.play_pipeline()?;
+        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
+            config.gst_media_stream.play_pipeline(metadata.as_mut())?;
         }
 
         let bus_loop_futures: Vec<_> = configs

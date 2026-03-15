@@ -171,11 +171,14 @@ impl GstMediaStream {
         Ok(())
     }
 
-    pub fn play_pipeline(&mut self) -> Result<(), GStreamerError> {
+    pub fn play_pipeline(
+        &mut self,
+        metadata: Option<&mut RecordingMetadata>,
+    ) -> Result<(), GStreamerError> {
         let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
             "Please call build pipeline first".into(),
         ))?;
-        play_pipeline(&pipeline)?;
+        play_pipeline(&pipeline, metadata)?;
         Ok(())
     }
 
@@ -396,7 +399,7 @@ impl GstMediaStream {
 
         preroll_pipeline(&pipeline).await?;
         set_pipeline_clock(&pipeline, &clock, base_time, metadata.as_mut())?;
-        play_pipeline(&pipeline)?;
+        play_pipeline(&pipeline, metadata.as_mut())?;
 
         let pipeline_task = tokio::spawn(run_bus_loop(
             pipeline.clone(),
@@ -443,7 +446,7 @@ impl GstMediaStream {
         let clock = gstreamer::SystemClock::obtain();
         let base_time = clock.time();
         set_pipeline_clock(&pipeline, &clock, base_time, metadata.as_mut())?;
-        play_pipeline(&pipeline)?;
+        play_pipeline(&pipeline, metadata.as_mut())?;
 
         let pipeline_task = tokio::spawn(run_bus_loop(
             pipeline.clone(),
