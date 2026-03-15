@@ -1,6 +1,7 @@
 use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
+use crate::{AudioPublishOptions, AvMixStream, VideoPublishOptions};
 use gstreamer::prelude::ClockExt;
 use gstreamer::Buffer;
 use livekit::options::{TrackPublishOptions, VideoCodec};
@@ -52,6 +53,13 @@ pub struct StreamingHandlingConfig {
     pub publish_to_livekit: bool,
 }
 
+pub struct AvMixStreamingConfig {
+    pub camera: VideoPublishOptions,
+    pub mic1: AudioPublishOptions,
+    pub mic2: Option<AudioPublishOptions>,
+    pub publish_audio_to_livekit: bool,
+}
+
 impl LKParticipant {
     pub fn new(room: Arc<Room>) -> Self {
         let master_clock = gstreamer::SystemClock::obtain();
@@ -74,6 +82,151 @@ impl LKParticipant {
                 .await?;
         }
         Ok(())
+    }
+
+    pub async fn handle_av_stream(
+        &mut self,
+        config: AvMixStreamingConfig,
+    ) -> Result<(), LKParticipantError> {
+        let camera = config.camera.clone();
+        let mic1 = config.mic1.clone();
+        let mic2 = config.mic2.clone();
+        let mut av_mix_stream = AvMixStream::new(camera, mic1, mic2);
+        av_mix_stream.build_pipeline().await?;
+        av_mix_stream.preroll_pipeline().await?;
+        av_mix_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
+
+        if config.publish_audio_to_livekit {
+            self.publish_avmix_stream_audio(&mut av_mix_stream, None)
+                .await?;
+        }
+
+        if config.publish_audio_to_livekit {
+            self.publish_avmix_stream_video(&mut av_mix_stream, None)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn publish_avmix_stream_audio(
+        &mut self,
+        stream: &mut AvMixStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            return Err(LKParticipantError::GStreamerError(
+                GStreamerError::PipelineError("Stream has not started".into()),
+            ));
+        }
+        let (frames_rx, close_rx) = stream.subscribe_audio().unwrap();
+        let audio_options = stream.get_audio_publish_options();
+        let track_name = format!(
+            "{}-{}",
+            self.room.local_participant().name(),
+            "AV Mix Audio"
+        );
+
+        let rtc_source = NativeAudioSource::new(
+            Default::default(),
+            audio_options.framerate as u32,
+            audio_options.channels as u32,
+            2000,
+        );
+
+        let track = LocalAudioTrack::create_audio_track(
+            &track_name,
+            RtcAudioSource::Native(rtc_source.clone()),
+        );
+
+        let track_sid = random_string("audio-track");
+
+        let task = tokio::spawn(Self::audio_track_task(
+            close_rx,
+            frames_rx,
+            rtc_source.clone(),
+        ));
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Microphone,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.published_tracks.insert(
+            track_sid.clone(),
+            TrackHandle {
+                track: LocalTrack::Audio(track),
+                task,
+            },
+        );
+
+        Ok(track_sid)
+    }
+
+    pub async fn publish_avmix_stream_video(
+        &mut self,
+        stream: &mut AvMixStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            return Err(LKParticipantError::GStreamerError(
+                GStreamerError::PipelineError("Stream has not started".into()),
+            ));
+        }
+        let (frames_rx, close_rx) = stream.subscribe_video().unwrap();
+        let video_options = stream.get_video_publish_options();
+        let track_name = format!(
+            "{}-{}",
+            self.room.local_participant().name(),
+            "AV Mix Video"
+        );
+
+        let rtc_source = NativeVideoSource::new(VideoResolution {
+            width: 640,  // video_options.width as u32,
+            height: 480, // video_options.height as u32,
+        });
+
+        let track = LocalVideoTrack::create_video_track(
+            &track_name,
+            RtcVideoSource::Native(rtc_source.clone()),
+        );
+
+        let track_sid = random_string("video-track");
+
+        let task = tokio::spawn(Self::video_track_task(
+            close_rx,
+            frames_rx,
+            rtc_source.clone(),
+        ));
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Camera,
+                    simulcast: false,
+                    video_codec: VideoCodec::VP9,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.published_tracks.insert(
+            track_sid.clone(),
+            TrackHandle {
+                track: LocalTrack::Video(track),
+                task,
+            },
+        );
+
+        Ok(track_sid)
     }
 
     pub async fn handle_streams(
