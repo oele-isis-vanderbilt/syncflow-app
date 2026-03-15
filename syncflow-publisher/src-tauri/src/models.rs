@@ -14,6 +14,15 @@ use crate::{register::RegistrationResponse, session_listener::SessionListener};
 pub struct DeviceRecordingAndStreamingConfig {
     pub publish_options: PublishOptions,
     pub enable_streaming: bool,
+    pub av_mix_mode: Option<AvMixMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum AvMixMode {
+    Primary, // Main video source
+    Mic1,    // Primary audio
+    Mic2,    // Secondary audio
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

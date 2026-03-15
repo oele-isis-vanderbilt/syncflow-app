@@ -485,70 +485,97 @@ impl GstMediaDevice {
 
         let output_rate = devices[0].1.framerate;
 
-        // Always use audiomixer — works for 1 or 2 mics
-        // Single mic: mixer is a passthrough
-        // Two mics: mixer sums to mono
-        let mixer = Self::make_element("audiomixer")?;
-        pipeline
-            .add(&mixer)
-            .map_err(|_| GStreamerError::PipelineError("Failed to add audiomixer".into()))?;
-
-        for (i, (device, _options)) in devices.iter().enumerate() {
-            let source = device.get_audio_element()?;
-            let convert = Self::make_element("audioconvert")?;
-            let resample = Self::make_element("audioresample")?;
-
-            let mic_caps = gstreamer::Caps::builder("audio/x-raw")
-                .field("format", "S16LE")
-                .field("channels", 1i32)
-                .field("rate", output_rate)
-                .build();
-            let capsfilter = Self::make_capsfilter(&mic_caps)?;
-
-            pipeline
-                .add_many([&source, &convert, &resample, &capsfilter])
-                .map_err(|_| {
-                    GStreamerError::PipelineError(format!("Failed to add mic {} elements", i + 1))
-                })?;
-
-            gstreamer::Element::link_many([&source, &convert, &resample, &capsfilter]).map_err(
-                |_| GStreamerError::PipelineError(format!("Failed to link mic {} chain", i + 1)),
-            )?;
-
-            let mixer_pad = mixer.request_pad_simple("sink_%u").ok_or_else(|| {
-                GStreamerError::PipelineError(format!(
-                    "Failed to request mixer pad for mic {}",
-                    i + 1
-                ))
-            })?;
-            let capsfilter_src = capsfilter.static_pad("src").unwrap();
-            capsfilter_src.link(&mixer_pad).map_err(|_| {
-                GStreamerError::PipelineError(format!("Failed to link mic {} to mixer", i + 1))
-            })?;
-        }
-
-        // Mono output with proper layout
         let output_caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
             .field("channels", 1i32)
             .field("rate", output_rate)
             .field("layout", "interleaved")
             .build();
-        let output_filter = Self::make_capsfilter(&output_caps)?;
 
-        pipeline
-            .add(&output_filter)
-            .map_err(|_| GStreamerError::PipelineError("Failed to add output capsfilter".into()))?;
-        mixer
-            .link(&output_filter)
-            .map_err(|_| GStreamerError::PipelineError("Failed to link mixer to output".into()))?;
+        let output_element: gstreamer::Element = if devices.len() == 1 {
+            // Single mic — direct chain, no mixer
+            let (device, _options) = &devices[0];
+            let source = device.get_audio_element()?;
+            let convert = Self::make_element("audioconvert")?;
+            let resample = Self::make_element("audioresample")?;
+            let capsfilter = Self::make_capsfilter(&output_caps)?;
+
+            pipeline
+                .add_many([&source, &convert, &resample, &capsfilter])
+                .map_err(|_| {
+                    GStreamerError::PipelineError("Failed to add audio elements".into())
+                })?;
+
+            gstreamer::Element::link_many([&source, &convert, &resample, &capsfilter]).map_err(
+                |_| GStreamerError::PipelineError("Failed to link audio source chain".into()),
+            )?;
+
+            capsfilter
+        } else {
+            // Multiple mics — use audiomixer
+            let mixer = Self::make_element("audiomixer")?;
+            pipeline
+                .add(&mixer)
+                .map_err(|_| GStreamerError::PipelineError("Failed to add audiomixer".into()))?;
+
+            for (i, (device, _options)) in devices.iter().enumerate() {
+                let source = device.get_audio_element()?;
+                let convert = Self::make_element("audioconvert")?;
+                let resample = Self::make_element("audioresample")?;
+
+                let mic_caps = gstreamer::Caps::builder("audio/x-raw")
+                    .field("format", "S16LE")
+                    .field("channels", 1i32)
+                    .field("rate", output_rate)
+                    .build();
+                let capsfilter = Self::make_capsfilter(&mic_caps)?;
+
+                pipeline
+                    .add_many([&source, &convert, &resample, &capsfilter])
+                    .map_err(|_| {
+                        GStreamerError::PipelineError(format!(
+                            "Failed to add mic {} elements",
+                            i + 1
+                        ))
+                    })?;
+
+                gstreamer::Element::link_many([&source, &convert, &resample, &capsfilter])
+                    .map_err(|_| {
+                        GStreamerError::PipelineError(format!("Failed to link mic {} chain", i + 1))
+                    })?;
+
+                let mixer_pad = mixer.request_pad_simple("sink_%u").ok_or_else(|| {
+                    GStreamerError::PipelineError(format!(
+                        "Failed to request mixer pad for mic {}",
+                        i + 1
+                    ))
+                })?;
+                // Reduce volume to prevent clipping when summing
+                mixer_pad.set_property("volume", 0.5f64);
+
+                let capsfilter_src = capsfilter.static_pad("src").unwrap();
+                capsfilter_src.link(&mixer_pad).map_err(|_| {
+                    GStreamerError::PipelineError(format!("Failed to link mic {} to mixer", i + 1))
+                })?;
+            }
+
+            let output_filter = Self::make_capsfilter(&output_caps)?;
+            pipeline.add(&output_filter).map_err(|_| {
+                GStreamerError::PipelineError("Failed to add output capsfilter".into())
+            })?;
+            mixer.link(&output_filter).map_err(|_| {
+                GStreamerError::PipelineError("Failed to link mixer to output".into())
+            })?;
+
+            output_filter
+        };
 
         // Tee
         let tee = Self::make_element("tee")?;
         pipeline
             .add(&tee)
             .map_err(|_| GStreamerError::PipelineError("Failed to add audio tee".into()))?;
-        output_filter
+        output_element
             .link(&tee)
             .map_err(|_| GStreamerError::PipelineError("Failed to link output to tee".into()))?;
 
@@ -580,7 +607,7 @@ impl GstMediaDevice {
         Ok(AudioChainHandles {
             tee,
             appsink_tx: stream_tx,
-            num_channels: 1, // always mono with audiomixer
+            num_channels: 1,
         })
     }
 }

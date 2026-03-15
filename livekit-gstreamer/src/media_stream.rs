@@ -83,6 +83,7 @@ pub struct GstMediaStream {
     frame_tx: Option<broadcast::Sender<Arc<Buffer>>>,
     close_tx: Option<broadcast::Sender<()>>,
     pipeline: Option<Pipeline>,
+    metadata: Option<RecordingMetadata>,
 }
 
 pub async fn create_dir(options: &LocalFileSaveOptions) -> Result<PathBuf, GStreamerError> {
@@ -123,6 +124,7 @@ impl GstMediaStream {
             frame_tx: None,
             close_tx: None,
             pipeline: None,
+            metadata: None,
         }
     }
 
@@ -162,35 +164,29 @@ impl GstMediaStream {
         &mut self,
         clock: &gstreamer::Clock,
         base_time: gstreamer::ClockTime,
-        metadata: Option<&mut RecordingMetadata>,
     ) -> Result<(), GStreamerError> {
         let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
             "Please call build pipeline first".into(),
         ))?;
-        set_pipeline_clock(&pipeline, clock, base_time, metadata)?;
+        set_pipeline_clock(&pipeline, clock, base_time, self.metadata.as_mut())?;
         Ok(())
     }
 
-    pub fn play_pipeline(
-        &mut self,
-        metadata: Option<&mut RecordingMetadata>,
-    ) -> Result<(), GStreamerError> {
+    pub fn play_pipeline(&mut self) -> Result<(), GStreamerError> {
         let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
             "Please call build pipeline first".into(),
         ))?;
-        play_pipeline(&pipeline, metadata)?;
+        play_pipeline(&pipeline, self.metadata.as_mut())?;
         Ok(())
     }
 
-    pub async fn run_bus_loop(
-        &mut self,
-        metadata: Option<&mut RecordingMetadata>,
-    ) -> Result<(), GStreamerError> {
+    pub async fn run_bus_loop(&mut self) -> Result<(), GStreamerError> {
         let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
             "Please call build pipeline first".into(),
         ))?;
 
         let (close_tx, _) = broadcast::channel::<()>(1);
+        let metadata = self.metadata.as_mut();
         let pipeline_task = tokio::spawn(run_bus_loop(
             pipeline.clone(),
             close_tx.clone(),
@@ -372,6 +368,7 @@ impl GstMediaStream {
 
         self.frame_tx = Some(frame_tx);
         self.pipeline = Some(pipeline.clone());
+        self.metadata = metadata.clone();
         Ok((pipeline, metadata))
     }
 

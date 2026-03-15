@@ -48,16 +48,15 @@ struct TrackHandle {
     task: tokio::task::JoinHandle<()>,
 }
 
-pub struct StreamingHandlingConfig {
-    pub gst_media_stream: GstMediaStream,
-    pub publish_to_livekit: bool,
+#[derive(Debug)]
+pub enum MediaStream {
+    Individual(GstMediaStream),
+    AvMix(AvMixStream),
 }
 
-pub struct AvMixStreamingConfig {
-    pub camera: VideoPublishOptions,
-    pub mic1: AudioPublishOptions,
-    pub mic2: Option<AudioPublishOptions>,
-    pub publish_audio_to_livekit: bool,
+pub struct StreamingHandlingConfig {
+    pub media_stream: MediaStream,
+    pub publish_to_livekit: bool,
 }
 
 impl LKParticipant {
@@ -81,31 +80,6 @@ impl LKParticipant {
                 .start_with_clock(self.master_clock.clone(), self.base_time)
                 .await?;
         }
-        Ok(())
-    }
-
-    pub async fn handle_av_stream(
-        &mut self,
-        config: AvMixStreamingConfig,
-    ) -> Result<(), LKParticipantError> {
-        let camera = config.camera.clone();
-        let mic1 = config.mic1.clone();
-        let mic2 = config.mic2.clone();
-        let mut av_mix_stream = AvMixStream::new(camera, mic1, mic2);
-        av_mix_stream.build_pipeline().await?;
-        av_mix_stream.preroll_pipeline().await?;
-        av_mix_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
-
-        if config.publish_audio_to_livekit {
-            self.publish_avmix_stream_audio(&mut av_mix_stream, None)
-                .await?;
-        }
-
-        if config.publish_audio_to_livekit {
-            self.publish_avmix_stream_video(&mut av_mix_stream, None)
-                .await?;
-        }
-
         Ok(())
     }
 
@@ -233,43 +207,77 @@ impl LKParticipant {
         &mut self,
         configs: &mut [StreamingHandlingConfig],
     ) -> Result<(), LKParticipantError> {
-        let mut recording_metadatas = vec![];
-
+        // Build pipelines for all streams
         for config in configs.iter_mut() {
-            let (_, metadata) = config.gst_media_stream.build_pipeline().await?;
-            recording_metadatas.push(metadata);
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.build_pipeline().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.build_pipeline().await?;
+                }
+            }
         }
 
-        let preroll_futures: Vec<_> = configs
-            .iter_mut()
-            .map(|config| config.gst_media_stream.preroll_pipeline())
-            .collect();
-
-        futures::future::try_join_all(preroll_futures).await?;
-
-        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
-            config.gst_media_stream.set_pipeline_clock(
-                &self.master_clock,
-                self.base_time,
-                metadata.as_mut(),
-            )?;
+        // Preroll all streams
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.preroll_pipeline().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.preroll_pipeline().await?;
+                }
+            }
         }
 
-        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
-            config.gst_media_stream.play_pipeline(metadata.as_mut())?;
+        // Set clock for all streams
+        for (i, config) in configs.iter_mut().enumerate() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
+                }
+            }
         }
 
-        let bus_loop_futures: Vec<_> = configs
-            .iter_mut()
-            .zip(recording_metadatas.iter_mut())
-            .map(|(config, metadata)| config.gst_media_stream.run_bus_loop(metadata.as_mut()))
-            .collect();
+        // Start all streams
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.play_pipeline()?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.play_pipeline()?;
+                }
+            }
+        }
 
-        futures::future::try_join_all(bus_loop_futures).await?;
+        // Run bus loops
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.run_bus_loop().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.run_bus_loop().await?;
+                }
+            }
+        }
 
+        // Publish streams to LiveKit if enabled
         for config in configs.iter_mut().filter(|c| c.publish_to_livekit) {
-            self.publish_stream(&mut config.gst_media_stream, None)
-                .await?;
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    self.publish_stream(gst_stream, None).await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    self.publish_avmix_stream_audio(av_stream, None).await?;
+                    self.publish_avmix_stream_video(av_stream, None).await?;
+                }
+            }
         }
 
         Ok(())

@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { Button } from 'flowbite-svelte';
-    import type { MediaDeviceInfo, PublishOptions } from './types';
+    import { Button, Toggle, Select } from 'flowbite-svelte';
+    import type { MediaDeviceInfo, PublishOptions, AvMixMode } from './types';
 
     let {
         selectedDevicesFn,
@@ -8,15 +8,39 @@
         allDevices,
         onRemoveDevice = () => {},
         showDeleteButton = true,
+        avMixMode = false,
+        avMixRoles = {},
+        onAvMixModeChange = () => {},
+        onAvMixRoleChange = () => {},
+        readonly = false,
     }: {
         selectedDevicesFn: () => PublishOptions[];
         allDevices: MediaDeviceInfo[];
         onRemoveDevice?: (deviceId: string) => void;
         streamingConfigFn: () => Record<string, boolean>;
         showDeleteButton?: boolean;
+        avMixMode?: boolean;
+        avMixRoles?: Record<string, AvMixMode>;
+        onAvMixModeChange?: (enabled: boolean) => void;
+        onAvMixRoleChange?: (deviceId: string, role: AvMixMode | undefined) => void;
+        readonly?: boolean;
     } = $props();
 
     let minimized = $state(false);
+
+    // Check if AV mix mode is valid (1 video + 1-2 audio devices)
+    let canEnableAvMix = $derived.by(() => {
+        const devices = selectedDevicesFn();
+        const videoDevices = devices.filter((d) => d.kind === 'Video');
+        const audioDevices = devices.filter((d) => d.kind === 'Audio');
+        return videoDevices.length === 1 && audioDevices.length >= 1 && audioDevices.length <= 2;
+    });
+
+    let avMixRoleOptions = [
+        { value: 'primary', name: 'Primary Camera' },
+        { value: 'mic1', name: 'Microphone 1' },
+        { value: 'mic2', name: 'Microphone 2' },
+    ];
 
     function getDeviceName(devicePath: string) {
         const device = allDevices.find((d) => d.devicePath === devicePath);
@@ -28,6 +52,8 @@
         const streamingConfigs = streamingConfigFn();
         return streamingConfigs;
     });
+
+    $inspect(selectedDevicesFn());
 </script>
 
 <div
@@ -53,6 +79,26 @@
         </Button>
     </div>
     {#if !minimized}
+        <!-- AV Mix Mode Toggle -->
+        {#if canEnableAvMix}
+            <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <div class="flex items-center justify-between mb-2">
+                    <label for="av-mix-toggle" class="text-sm font-medium text-blue-800">
+                        AV Mix Mode
+                    </label>
+                    <Toggle
+                        id="av-mix-toggle"
+                        bind:checked={avMixMode}
+                        onchange={() => onAvMixModeChange(avMixMode)}
+                        disabled={readonly}
+                    />
+                </div>
+                <p class="text-xs text-blue-600">
+                    Combine video and audio into a single synchronized stream
+                </p>
+            </div>
+        {/if}
+
         <div class="space-y-4 flex-1 overflow-y-auto">
             {#each selectedDevicesFn() as device, index}
                 {@const deviceName =
@@ -121,6 +167,36 @@
                                     : 'No'}</span
                             >
                         </div>
+                        {#if avMixMode}
+                            {@const deviceId =
+                                device.kind === 'Screen' ? device.screenIdOrName : device.deviceId}
+                            <div class="mt-3 pt-3 border-t border-purple-200">
+                                <label class="block text-sm font-medium text-purple-700 mb-2">
+                                    AV Mix Role:
+                                </label>
+                                <Select
+                                    value={avMixRoles[deviceId] || ''}
+                                    placeholder="Select role..."
+                                    items={avMixRoleOptions.filter((option) => {
+                                        // Filter roles based on device type
+                                        if (device.kind === 'Video' || device.kind === 'Screen') {
+                                            return option.value === 'primary';
+                                        } else if (device.kind === 'Audio') {
+                                            return (
+                                                option.value === 'mic1' || option.value === 'mic2'
+                                            );
+                                        }
+                                        return false;
+                                    })}
+                                    onchange={(e) => {
+                                        const target = e.target as HTMLSelectElement;
+                                        console.log('Select change event:', deviceId, target.value);
+                                        onAvMixRoleChange(deviceId, target.value as AvMixMode);
+                                    }}
+                                    disabled={readonly}
+                                />
+                            </div>
+                        {/if}
                     </div>
                 </div>
             {/each}

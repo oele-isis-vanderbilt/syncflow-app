@@ -9,6 +9,7 @@ use gstreamer::{prelude::ElementExtManual, Buffer, Pipeline};
 use std::path;
 use tokio::sync::broadcast;
 
+#[derive(Debug)]
 pub struct AvMixStream {
     pub video_publish_options: VideoPublishOptions,
     pub mic1: AudioPublishOptions,
