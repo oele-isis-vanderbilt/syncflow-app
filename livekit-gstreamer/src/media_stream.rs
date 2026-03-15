@@ -1,5 +1,6 @@
 use crate::{
-    media_device::{run_pipeline, GStreamerError, GstMediaDevice},
+    media_device::{GStreamerError, GstMediaDevice},
+    play_pipeline, preroll_pipeline, run_bus_loop, set_pipeline_clock,
     utils::random_string,
     RecordingMetadata,
 };
@@ -15,7 +16,7 @@ use tokio::{fs, sync::broadcast};
 struct StreamHandle {
     close_tx: broadcast::Sender<()>,
     frame_tx: broadcast::Sender<Arc<Buffer>>,
-    task: tokio::task::JoinHandle<Result<(), GStreamerError>>,
+    task: Option<tokio::task::JoinHandle<Result<(), GStreamerError>>>,
     pipeline: Pipeline,
     device: GstMediaDevice,
 }
@@ -79,6 +80,9 @@ pub enum PublishOptions {
 pub struct GstMediaStream {
     handle: Option<StreamHandle>,
     publish_options: PublishOptions,
+    frame_tx: Option<broadcast::Sender<Arc<Buffer>>>,
+    close_tx: Option<broadcast::Sender<()>>,
+    pipeline: Option<Pipeline>,
 }
 
 pub async fn create_dir(options: &LocalFileSaveOptions) -> Result<PathBuf, GStreamerError> {
@@ -116,11 +120,14 @@ impl GstMediaStream {
         Self {
             handle: None,
             publish_options,
+            frame_tx: None,
+            close_tx: None,
+            pipeline: None,
         }
     }
 
     pub fn has_started(&self) -> bool {
-        self.handle.is_some()
+        self.handle.as_ref().is_some_and(|h| h.task.is_some())
     }
 
     pub fn kind(&self) -> &str {
@@ -134,21 +141,92 @@ impl GstMediaStream {
     pub async fn stop(&mut self) -> Result<(), GStreamerError> {
         if let Some(handle) = self.handle.take() {
             handle.pipeline.send_event(gstreamer::event::Eos::new());
-            let _ = handle.task.await;
+            if let Some(task) = handle.task {
+                let _ = task.await;
+            }
         }
         self.handle = None;
         Ok(())
     }
 
-    pub async fn start_with_clock(
-        &mut self,
-        clock: gstreamer::Clock,
-        base_time: gstreamer::ClockTime,
-    ) -> Result<(), GStreamerError> {
-        self.stop().await?;
-        let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
-        let (close_tx, _) = broadcast::channel::<()>(1);
+    pub async fn preroll_pipeline(&mut self) -> Result<(), GStreamerError> {
+        let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
+            "Please call build pipeline first".into(),
+        ))?;
 
+        preroll_pipeline(&pipeline).await?;
+        Ok(())
+    }
+
+    pub fn set_pipeline_clock(
+        &mut self,
+        clock: &gstreamer::Clock,
+        base_time: gstreamer::ClockTime,
+        metadata: Option<&mut RecordingMetadata>,
+    ) -> Result<(), GStreamerError> {
+        let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
+            "Please call build pipeline first".into(),
+        ))?;
+        set_pipeline_clock(&pipeline, clock, base_time, metadata)?;
+        Ok(())
+    }
+
+    pub fn play_pipeline(&mut self) -> Result<(), GStreamerError> {
+        let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
+            "Please call build pipeline first".into(),
+        ))?;
+        play_pipeline(&pipeline)?;
+        Ok(())
+    }
+
+    pub async fn run_bus_loop(
+        &mut self,
+        metadata: Option<&mut RecordingMetadata>,
+    ) -> Result<(), GStreamerError> {
+        let pipeline = self.pipeline.clone().ok_or(GStreamerError::PipelineError(
+            "Please call build pipeline first".into(),
+        ))?;
+
+        let (close_tx, _) = broadcast::channel::<()>(1);
+        let pipeline_task = tokio::spawn(run_bus_loop(
+            pipeline.clone(),
+            close_tx.clone(),
+            metadata.cloned(),
+        ));
+
+        let frame_tx =
+            self.frame_tx.as_ref().cloned().ok_or_else(|| {
+                GStreamerError::PipelineError("Frame channel not initialized".into())
+            })?;
+        let device = self.get_device()?;
+        let handle = StreamHandle {
+            close_tx,
+            frame_tx,
+            task: Some(pipeline_task),
+            pipeline,
+            device,
+        };
+        self.handle = Some(handle);
+        Ok(())
+    }
+
+    fn get_device(&self) -> Result<GstMediaDevice, GStreamerError> {
+        match &self.publish_options {
+            PublishOptions::Video(video_options) => {
+                GstMediaDevice::from_device_path(video_options.device_id.as_str())
+            }
+            PublishOptions::Audio(audio_options) => {
+                GstMediaDevice::from_device_path(audio_options.device_id.as_str())
+            }
+            PublishOptions::Screen(screen_options) => {
+                GstMediaDevice::from_screen_id_or_name(&screen_options.screen_id_or_name)
+            }
+        }
+    }
+
+    pub async fn build_pipeline(
+        &mut self,
+    ) -> Result<(Pipeline, Option<RecordingMetadata>), GStreamerError> {
         let device = match &self.publish_options {
             PublishOptions::Video(video_options) => {
                 GstMediaDevice::from_device_path(video_options.device_id.as_str())?
@@ -161,9 +239,9 @@ impl GstMediaStream {
             }
         };
 
-        let frame_tx_arc = Arc::new(frame_tx.clone());
         let mut metadata = None;
-
+        let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
+        let frame_tx_arc = Arc::new(frame_tx.clone());
         let pipeline = match &self.publish_options {
             PublishOptions::Video(video_options) => {
                 let mut filename = None;
@@ -289,18 +367,52 @@ impl GstMediaStream {
             }
         };
 
-        let pipline_task = tokio::spawn(run_pipeline(
+        self.frame_tx = Some(frame_tx);
+        self.pipeline = Some(pipeline.clone());
+        Ok((pipeline, metadata))
+    }
+
+    pub async fn start_with_clock(
+        &mut self,
+        clock: gstreamer::Clock,
+        base_time: gstreamer::ClockTime,
+    ) -> Result<(), GStreamerError> {
+        self.stop().await?;
+        let (close_tx, _) = broadcast::channel::<()>(1);
+
+        let device = match &self.publish_options {
+            PublishOptions::Video(video_options) => {
+                GstMediaDevice::from_device_path(video_options.device_id.as_str())?
+            }
+            PublishOptions::Audio(audio_options) => {
+                GstMediaDevice::from_device_path(audio_options.device_id.as_str())?
+            }
+            PublishOptions::Screen(screen_options) => {
+                GstMediaDevice::from_screen_id_or_name(&screen_options.screen_id_or_name)?
+            }
+        };
+
+        let (pipeline, mut metadata) = self.build_pipeline().await?;
+
+        preroll_pipeline(&pipeline).await?;
+        set_pipeline_clock(&pipeline, &clock, base_time, metadata.as_mut())?;
+        play_pipeline(&pipeline)?;
+
+        let pipeline_task = tokio::spawn(run_bus_loop(
             pipeline.clone(),
             close_tx.clone(),
             metadata.clone(),
-            Some(clock),     // Pass the custom clock
-            Some(base_time), // Pass the custom base time
         ));
+
+        let frame_tx =
+            self.frame_tx.as_ref().cloned().ok_or_else(|| {
+                GStreamerError::PipelineError("Frame channel not initialized".into())
+            })?;
 
         let handle = StreamHandle {
             close_tx,
             frame_tx,
-            task: pipline_task,
+            task: Some(pipeline_task),
             pipeline,
             device,
         };
@@ -311,7 +423,6 @@ impl GstMediaStream {
     pub async fn start(&mut self) -> Result<(), GStreamerError> {
         self.stop().await?;
 
-        let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
         let (close_tx, _) = broadcast::channel::<()>(1);
 
         let device = match &self.publish_options {
@@ -326,146 +437,29 @@ impl GstMediaStream {
             }
         };
 
-        let frame_tx_arc = Arc::new(frame_tx.clone());
-        let mut metadata = None;
+        let (pipeline, mut metadata) = self.build_pipeline().await?;
 
-        let pipeline = match &self.publish_options {
-            PublishOptions::Video(video_options) => {
-                let mut filename = None;
-                if let Some(local_file_save_options) = &video_options.local_file_save_options {
-                    let op_dir = create_dir(local_file_save_options).await?;
-                    let filename_str = format!(
-                        "{}-{}-{}-{}.mp4",
-                        "video",
-                        device.display_name.replace(" ", "_"),
-                        strict_sanitize_filename(&video_options.device_id),
-                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
-                    );
+        preroll_pipeline(&pipeline).await?;
+        let clock = gstreamer::SystemClock::obtain();
+        let base_time = clock.time();
+        set_pipeline_clock(&pipeline, &clock, base_time, metadata.as_mut())?;
+        play_pipeline(&pipeline)?;
 
-                    metadata = Some(RecordingMetadata::new(
-                        filename_str.clone(),
-                        path::absolute(&op_dir)
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string(),
-                        "camera".into(),
-                        "video".into(),
-                        video_options.codec.clone(),
-                        None, // No audio channel for video,
-                        Some(device.display_name.clone()),
-                    ));
-
-                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
-                }
-                device.video_pipeline(
-                    &video_options.codec,
-                    video_options.width,
-                    video_options.height,
-                    video_options.framerate,
-                    frame_tx_arc.clone(),
-                    filename,
-                )?
-            }
-            PublishOptions::Audio(audio_options) => {
-                let mut filename = None;
-                if let Some(local_file_save_options) = &audio_options.local_file_save_options {
-                    let op_dir = create_dir(local_file_save_options).await?;
-                    let filename_str = format!(
-                        "{}-{}-{}-{}.m4a",
-                        "audio",
-                        match audio_options.selected_channel {
-                            Some(channel) => format!(
-                                "{}-{}",
-                                strict_sanitize_filename(&device.display_name),
-                                channel
-                            ),
-                            None => strict_sanitize_filename(&device.display_name),
-                        },
-                        strict_sanitize_filename(&audio_options.device_id),
-                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
-                    );
-
-                    metadata = Some(RecordingMetadata::new(
-                        filename_str.clone(),
-                        path::absolute(&op_dir)
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string(),
-                        "microphone".into(),
-                        "audio".into(),
-                        audio_options.codec.clone(),
-                        audio_options.selected_channel,
-                        Some(device.display_name.clone()),
-                    ));
-
-                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
-                }
-                match audio_options.selected_channel {
-                    Some(selected_channel) => device.deinterleaved_audio_pipeline(
-                        &audio_options.codec,
-                        audio_options.channels,
-                        selected_channel,
-                        audio_options.framerate,
-                        frame_tx_arc.clone(),
-                        filename,
-                    )?,
-                    None => device.audio_pipeline(
-                        &audio_options.codec,
-                        audio_options.channels,
-                        audio_options.framerate,
-                        frame_tx_arc.clone(),
-                        filename,
-                    )?,
-                }
-            }
-            PublishOptions::Screen(screen_options) => {
-                let mut filename = None;
-                if let Some(local_file_save_options) = &screen_options.local_file_save_options {
-                    let op_dir = create_dir(local_file_save_options).await?;
-                    let filename_str = format!(
-                        "{}-{}-{}.mp4",
-                        "screen-share",
-                        screen_options.screen_id_or_name.replace(" ", "_"),
-                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
-                    );
-
-                    metadata = Some(RecordingMetadata::new(
-                        filename_str.clone(),
-                        path::absolute(&op_dir)
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string(),
-                        "screen-share".into(),
-                        "video".into(),
-                        screen_options.codec.clone(),
-                        None,
-                        Some(device.display_name.clone()),
-                    ));
-                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
-                }
-                device.screen_share_pipeline(
-                    &screen_options.codec,
-                    screen_options.width,
-                    screen_options.height,
-                    screen_options.framerate,
-                    frame_tx_arc.clone(),
-                    filename,
-                )?
-            }
-        };
-
-        let pipline_task = tokio::spawn(run_pipeline(
+        let pipeline_task = tokio::spawn(run_bus_loop(
             pipeline.clone(),
             close_tx.clone(),
             metadata.clone(),
-            None, // No custom clock for this start method
-            None, // No custom base time for this start method
         ));
+
+        let frame_tx =
+            self.frame_tx.as_ref().cloned().ok_or_else(|| {
+                GStreamerError::PipelineError("Frame channel not initialized".into())
+            })?;
 
         let handle = StreamHandle {
             close_tx,
             frame_tx,
-            task: pipline_task,
+            task: Some(pipeline_task),
             pipeline,
             device,
         };

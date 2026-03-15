@@ -145,117 +145,98 @@ impl RecordingMetadata {
     }
 }
 
-pub async fn run_pipeline(
-    pipeline: gstreamer::Pipeline,
-    tx: broadcast::Sender<()>,
-    mut recording_metadata: Option<RecordingMetadata>,
-    clock: Option<gstreamer::Clock>,
-    base_time: Option<gstreamer::ClockTime>,
-) -> Result<(), GStreamerError> {
-    let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
-
-    // Step 1: begin Paused transition
+pub async fn preroll_pipeline(pipeline: &gstreamer::Pipeline) -> Result<(), GStreamerError> {
     pipeline.set_state(gstreamer::State::Paused).map_err(|_| {
         GStreamerError::PipelineError("Failed to set pipeline to Paused state".to_string())
     })?;
 
-    // Step 2: wait for Paused off the async executor
     let pipeline_clone = pipeline.clone();
     tokio::task::spawn_blocking(move || {
-        pipeline_clone
-            .state(gstreamer::ClockTime::from_seconds(5))
-            .0
-            .map_err(|_| {
-                GStreamerError::PipelineError("Pipeline failed to reach Paused state".to_string())
-            })
-    })
-    .await
-    .map_err(|_| GStreamerError::PipelineError("spawn_blocking panicked".to_string()))??;
-
-    // Step 3: set clock and base_time
-    if let (Some(clock), Some(base_time)) = (clock, base_time) {
-        pipeline.set_clock(Some(&clock)).map_err(|_| {
-            GStreamerError::PipelineError("Failed to set custom clock on pipeline".to_string())
-        })?;
-        pipeline.set_base_time(base_time);
-        if let Some(metadata) = recording_metadata.as_mut() {
-            metadata.set_base_time(base_time.nseconds() as i64);
-        }
-        // pipeline.set_start_time(gstreamer::ClockTime::NONE); --- IGNORE ---
-    } else {
-        let master_clock = gstreamer::SystemClock::obtain();
-        pipeline.set_clock(Some(&master_clock)).map_err(|_| {
-            GStreamerError::PipelineError("Failed to set system clock on pipeline".to_string())
-        })?;
-    }
-
-    // Step 4: attach tee probe instead of filesink/encoder
-    if recording_metadata.is_some() {
-        let tee = pipeline
-            .iterate_elements()
-            .find(|e| e.factory().map(|f| f.name() == "tee").unwrap_or(false));
-        if let Some(tee) = tee {
-            let timing_clone = timing.clone();
-            if let Some(src_pad) = tee.static_pad("sink") {
-                // sink pad = first buffer in
-                src_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |pad, info| {
-                    if let Some(gstreamer::PadProbeData::Buffer(ref buffer)) = info.data {
-                        let pts = buffer
-                            .pts()
-                            .filter(|p| p.nseconds() > 0) // treat zero as missing
-                            .or_else(|| {
-                                #[cfg(target_os = "windows")]
-                                {
-                                    pad.parent_element().and_then(|e| e.current_running_time())
-                                }
-                                #[cfg(not(target_os = "windows"))]
-                                {
-                                    None
-                                }
-                            });
-                        if let Some(pts) = pts {
-                            let mut timing = timing_clone.lock().unwrap();
-                            if timing.start_time.is_none() {
-                                timing.start_time = Some(pts.nseconds() as i64);
-                            }
-                            timing.end_time = Some(pts.nseconds() as i64);
-                        }
+        let bus = pipeline_clone.bus().unwrap();
+        for msg in bus.iter_timed(gstreamer::ClockTime::from_seconds(10)) {
+            use gstreamer::MessageView;
+            match msg.view() {
+                MessageView::StateChanged(e) => {
+                    if e.src()
+                        .map(|s| s == pipeline_clone.upcast_ref::<gstreamer::Object>())
+                        .unwrap_or(false)
+                        && e.current() == gstreamer::State::Paused
+                    {
+                        break;
                     }
-                    gstreamer::PadProbeReturn::Ok
-                });
+                }
+                MessageView::AsyncDone(e) => {
+                    if e.src()
+                        .map(|s| s == pipeline_clone.upcast_ref::<gstreamer::Object>())
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+                MessageView::Error(err) => {
+                    return Err(GStreamerError::PipelineError(format!(
+                        "Pipeline error during preroll: {}",
+                        err.error().message()
+                    )));
+                }
+                _ => (),
             }
         }
+        Ok(())
+    })
+    .await
+    .map_err(|_| GStreamerError::PipelineError("spawn_blocking panicked".into()))?
+}
+
+pub fn set_pipeline_clock(
+    pipeline: &gstreamer::Pipeline,
+    clock: &gstreamer::Clock,
+    base_time: gstreamer::ClockTime,
+    metadata: Option<&mut RecordingMetadata>,
+) -> Result<(), GStreamerError> {
+    pipeline
+        .set_clock(Some(clock))
+        .map_err(|_| GStreamerError::PipelineError("Failed to set clock".to_string()))?;
+    pipeline.set_base_time(base_time);
+    pipeline.set_start_time(gstreamer::ClockTime::NONE);
+
+    if let Some(meta) = metadata {
+        meta.set_base_time(base_time.nseconds() as i64);
     }
-    // Step 5: transition to Playing then run bus loop — all blocking, off the executor
+    Ok(())
+}
+
+pub fn play_pipeline(pipeline: &gstreamer::Pipeline) -> Result<(), GStreamerError> {
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .map_err(|_| GStreamerError::PipelineError("Failed to set Playing".to_string()))?;
+    Ok(())
+}
+
+pub async fn run_bus_loop(
+    pipeline: gstreamer::Pipeline,
+    tx: broadcast::Sender<()>,
+    mut recording_metadata: Option<RecordingMetadata>,
+) -> Result<(), GStreamerError> {
     let pipeline_clone = pipeline.clone();
-    let timing_clone = timing.clone();
+    let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
+
     tokio::task::spawn_blocking(
         move || -> Result<Option<RecordingMetadata>, GStreamerError> {
-            pipeline_clone
-                .set_state(gstreamer::State::Playing)
-                .map_err(|err| {
-                    println!(
-                        "Failed to set pipeline to Playing state: {:?}",
-                        err.to_string()
-                    );
-                    GStreamerError::PipelineError(
-                        "Failed to set pipeline to Playing state".to_string(),
-                    )
-                })?;
-
             let bus = pipeline_clone.bus().unwrap();
+            let timing_clone = timing.clone();
             for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
                 use gstreamer::MessageView;
                 match msg.view() {
                     MessageView::Eos(..) => {
                         if let Some(metadata) = recording_metadata.as_mut() {
-                            metadata.set_end_time(system_time_nanos());
-                            if let Some(start_time) = timing_clone.lock().unwrap().start_time {
-                                metadata.set_start_time(start_time);
-                                metadata.set_first_pts(start_time);
+                            let t = timing_clone.lock().unwrap();
+                            if let Some(start) = t.start_time {
+                                metadata.set_start_time(start);
+                                metadata.set_first_pts(start);
                             }
-                            if let Some(end_time) = timing_clone.lock().unwrap().end_time {
-                                metadata.set_end_time(end_time);
+                            if let Some(end) = t.end_time {
+                                metadata.set_end_time(end);
                             }
                         }
                         break;
@@ -268,11 +249,6 @@ pub async fn run_pipeline(
                         break;
                     }
                     MessageView::StateChanged(e) => {
-                        if let Some(metadata) = recording_metadata.as_mut() {
-                            if e.current() == gstreamer::State::Playing {
-                                // metadata.set_start_time(system_time_nanos());
-                            }
-                        }
                         if e.current() == gstreamer::State::Null {
                             break;
                         }
@@ -283,25 +259,19 @@ pub async fn run_pipeline(
 
             pipeline_clone
                 .set_state(gstreamer::State::Null)
-                .map_err(|_| {
-                    GStreamerError::PipelineError(
-                        "Failed to set pipeline to Null state".to_string(),
-                    )
-                })?;
+                .map_err(|_| GStreamerError::PipelineError("Failed to set Null".to_string()))?;
 
             Ok(recording_metadata)
         },
     )
     .await
     .map_err(|_| GStreamerError::PipelineError("spawn_blocking panicked".to_string()))??
-    // Step 6: write metadata back on the async side after blocking work is done
     .map(|metadata| metadata.write_success());
 
-    tx.send(())
-        .map_err(|_| GStreamerError::PipelineError("Failed to send signal".to_string()))?;
-
+    tx.send(()).ok();
     Ok(())
 }
+
 impl GstMediaDevice {
     pub fn from_device_path(path: &str) -> Result<Self, GStreamerError> {
         let device = get_gst_device(path);
@@ -878,6 +848,29 @@ impl GstMediaDevice {
                 && c.height == height
                 && c.framerates.contains(&framerate)
         })
+    }
+
+    pub fn preroll_video_pipeline(
+        &self,
+        codec: &str,
+        width: i32,
+        height: i32,
+        framerate: i32,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        let pipeline = self.video_pipeline(
+            codec,
+            width,
+            height,
+            framerate,
+            Arc::new(broadcast::channel(1).0),
+            None,
+        )?;
+        pipeline.set_state(gstreamer::State::Paused).map_err(|_| {
+            GStreamerError::PipelineError(
+                "Failed to set preroll pipeline to Paused state".to_string(),
+            )
+        })?;
+        Ok(pipeline)
     }
 
     pub fn supports_audio(&self, codec: &str, channels: i32, framerate: i32) -> bool {
