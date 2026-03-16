@@ -5,6 +5,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { goto } from '$app/navigation';
     import { listen } from '@tauri-apps/api/event';
+    import { devicesStore, initialize } from '$lib/store.svelte';
     import type {
         NewSessionMessage,
         PublicationNotification,
@@ -13,6 +14,32 @@
     } from '$lib/components/types';
 
     let { data }: PageProps = $props();
+
+    // Initialize store and restore state from backend config
+    initialize(data.devices);
+
+    // Add selected devices to store
+    data.streamingConfigs.forEach((config) => {
+        const enableStreaming = config.enableStreaming;
+        devicesStore!.addDevice(config.publishOptions, enableStreaming);
+    });
+
+    // Restore avmix state from backend config
+    const hasAvMixDevices = data.streamingConfigs.some((config) => config.avMixMode);
+    if (hasAvMixDevices) {
+        devicesStore!.setAvMixMode(true);
+
+        // Restore avmix roles
+        data.streamingConfigs.forEach((config) => {
+            if (config.avMixMode) {
+                const deviceId =
+                    config.publishOptions.kind === 'Screen'
+                        ? config.publishOptions.screenIdOrName
+                        : config.publishOptions.deviceId;
+                devicesStore!.setAvMixRole(deviceId, config.avMixMode as any);
+            }
+        });
+    }
 
     let sessionMessages = $state<NewSessionMessage[]>([]);
     let publicationNotifications = $state<PublicationNotification[]>([]);
@@ -87,17 +114,14 @@
 >
     <SelectedDevices
         allDevices={data.devices}
-        selectedDevicesFn={() => data.streamingConfigs.map((config) => config.publishOptions)}
+        selectedDevicesFn={devicesStore?.getSelectedDevicesFn() || (() => [])}
         showDeleteButton={false}
-        streamingConfigFn={() =>
-            Object.fromEntries(
-                data.streamingConfigs.map((config) => [
-                    config.publishOptions.kind === 'Screen'
-                        ? config.publishOptions.screenIdOrName
-                        : config.publishOptions.deviceId,
-                    config.enableStreaming,
-                ])
-            )}
+        streamingConfigFn={devicesStore?.getStreamingConfigFn() || (() => ({}))}
+        avMixMode={devicesStore?.getAvMixMode() || false}
+        avMixRoles={devicesStore?.getAvMixRoles() || {}}
+        onAvMixModeChange={devicesStore?.setAvMixMode || (() => {})}
+        onAvMixRoleChange={devicesStore?.setAvMixRole || (() => {})}
+        readonly={true}
     />
     <Button
         color="red"

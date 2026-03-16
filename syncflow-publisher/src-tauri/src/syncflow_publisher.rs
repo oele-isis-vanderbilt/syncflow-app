@@ -1,13 +1,16 @@
 use std::{path::PathBuf, sync::Arc, vec};
 
 use crate::{
-    errors::SyncFlowPublisherError, models::DeviceRecordingAndStreamingConfig,
+    errors::SyncFlowPublisherError,
+    models::{AvMixMode, DeviceRecordingAndStreamingConfig},
     s3_uploader::upload_to_s3,
 };
 use livekit::{participant, Room, RoomOptions};
 use livekit_gstreamer::utils::system_time_nanos;
 use livekit_gstreamer::{
-    lk_participant, GstMediaStream, LocalFileSaveOptions, PublishOptions, StreamingHandlingConfig,
+    lk_participant::{self, MediaStream, StreamingHandlingConfig},
+    AudioPublishOptions, AvMixStream, GstMediaStream, LocalFileSaveOptions, PublishOptions,
+    VideoPublishOptions,
 };
 use serde::{Deserialize, Serialize};
 use syncflow_shared::{
@@ -98,8 +101,69 @@ pub async fn record_publish_to_syncflow(
         "{}-{}-{}",
         session_id, session_details.session_name, participant_name
     ));
-    let mut streams_and_recording_config: Vec<(GstMediaStream, bool)> = configs
+    // Check if we have AV mix configuration
+    let has_av_mix = configs.iter().any(|c| c.av_mix_mode.is_some());
+
+    let mut streaming_configs: Vec<StreamingHandlingConfig> = Vec::new();
+
+    if has_av_mix {
+        // Create AV mix stream configuration from devices with avmix roles
+        let video_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Primary))
+            .expect("AV mix mode requires a primary video source");
+
+        let mic1_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Mic1))
+            .expect("AV mix mode requires a primary audio source");
+
+        let mic2_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Mic2));
+
+        // Extract the publish options and add local file save
+        let mut video_opts = match &video_config.publish_options {
+            PublishOptions::Video(opts) => opts.clone(),
+            _ => panic!("Primary AV mix source must be video"),
+        };
+
+        let mut mic1_opts = match &mic1_config.publish_options {
+            PublishOptions::Audio(opts) => opts.clone(),
+            _ => panic!("Mic1 AV mix source must be audio"),
+        };
+
+        let mut mic2_opts = if let Some(mic2_config) = mic2_config {
+            match &mic2_config.publish_options {
+                PublishOptions::Audio(opts) => Some(opts.clone()),
+                _ => panic!("Mic2 AV mix source must be audio"),
+            }
+        } else {
+            None
+        };
+
+        // Add local file save options
+        let local_file_save_options = Some(LocalFileSaveOptions {
+            output_dir: output_dir.to_string_lossy().to_string(),
+        });
+
+        video_opts.local_file_save_options = local_file_save_options.clone();
+        mic1_opts.local_file_save_options = local_file_save_options.clone();
+        if let Some(ref mut mic2) = mic2_opts.as_mut() {
+            mic2.local_file_save_options = local_file_save_options;
+        }
+        let av_stream = AvMixStream::new(video_opts, mic1_opts, mic2_opts);
+
+        streaming_configs.push(StreamingHandlingConfig {
+            media_stream: MediaStream::AvMix(av_stream),
+            publish_to_livekit: video_config.enable_streaming || mic1_config.enable_streaming,
+        });
+    }
+
+    // Create individual streams for remaining devices (those without avmix roles)
+    let remaining_configs = configs
         .into_iter()
+        .filter(|config| config.av_mix_mode.is_none())
         .map(|config| {
             let mut cloned_publish_options = config.publish_options.clone();
 
@@ -120,9 +184,15 @@ pub async fn record_publish_to_syncflow(
             }
 
             let stream = GstMediaStream::new(cloned_publish_options);
-            (stream, config.enable_streaming)
+
+            StreamingHandlingConfig {
+                media_stream: MediaStream::Individual(stream),
+                publish_to_livekit: config.enable_streaming,
+            }
         })
-        .collect();
+        .collect::<Vec<_>>();
+
+    streaming_configs.extend(remaining_configs);
 
     let token_result =
         generate_session_token(project_client, participant_name.clone(), &session_details).await;
@@ -166,14 +236,6 @@ pub async fn record_publish_to_syncflow(
 
     let mut all_failures = vec![];
 
-    let mut streaming_configs: Vec<StreamingHandlingConfig> = streams_and_recording_config
-        .into_iter()
-        .map(|(stream, enable_streaming)| StreamingHandlingConfig {
-            gst_media_stream: stream,
-            publish_to_livekit: enable_streaming,
-        })
-        .collect();
-
     let result = participant.handle_streams(&mut streaming_configs).await;
 
     if let Err(e) = result {
@@ -199,7 +261,10 @@ pub async fn record_publish_to_syncflow(
                 started_at: system_time_nanos().to_string(),
                 devices: streaming_configs
                     .iter()
-                    .filter_map(|config| config.gst_media_stream.get_device_name())
+                    .filter_map(|config| match &config.media_stream {
+                        MediaStream::Individual(gst_stream) => gst_stream.get_device_name(),
+                        MediaStream::AvMix(_) => Some("AV Mix Stream".to_string()),
+                    })
                     .collect(),
             }),
         );
@@ -210,7 +275,14 @@ pub async fn record_publish_to_syncflow(
             livekit::RoomEvent::Disconnected { reason } => {
                 println!("Disconnected from room: {:?}", reason);
                 for config in streaming_configs.iter_mut() {
-                    config.gst_media_stream.stop().await.unwrap();
+                    match &mut config.media_stream {
+                        MediaStream::Individual(gst_stream) => {
+                            gst_stream.stop().await.unwrap();
+                        }
+                        MediaStream::AvMix(av_stream) => {
+                            av_stream.stop().await.unwrap();
+                        }
+                    }
                 }
                 let _ = event_emitter.emit(
                     "publication-notification",

@@ -8,9 +8,9 @@ use std::sync::Mutex;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-use crate::get_device_capabilities;
 use crate::utils::random_string;
 use crate::utils::system_time_nanos;
+use crate::{get_device_capabilities, AudioPublishOptions, VideoPublishOptions};
 use crate::{get_gst_device, get_monitor};
 
 #[cfg(target_os = "macos")]
@@ -279,8 +279,480 @@ pub async fn run_bus_loop(
     .map_err(|_| GStreamerError::PipelineError("spawn_blocking panicked".to_string()))??
     .map(|metadata| metadata.write_success());
 
-    tx.send(()).ok();
+    // tx.send(()).ok();
     Ok(())
+}
+
+// In media_device.rs - add this to GstMediaDevice impl
+
+/// Result of adding video to a pipeline - holds references needed for file branch
+pub struct VideoChainHandles {
+    pub tee: gstreamer::Element,
+    pub appsink_tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+}
+
+impl GstMediaDevice {
+    pub fn add_video_to_pipeline(
+        &self,
+        pipeline: &gstreamer::Pipeline,
+        options: &VideoPublishOptions,
+        stream_tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<VideoChainHandles, GStreamerError> {
+        if self.device_class == "Audio/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is an audio source".into(),
+            ));
+        }
+
+        if !SUPPORTED_VIDEO_CODECS.contains(&options.codec.as_str()) {
+            return Err(GStreamerError::PipelineError(format!(
+                "Unsupported codec {}",
+                options.codec
+            )));
+        }
+
+        let can_support = self.supports_video(
+            &options.codec,
+            options.width,
+            options.height,
+            options.framerate,
+        );
+        if !can_support {
+            return Err(GStreamerError::PipelineError(
+                "Device does not support requested configuration".into(),
+            ));
+        }
+
+        // Source element
+        let source = self.get_video_element()?;
+
+        eprintln!(
+            "[DEBUG] Video source created: {} (factory: {:?})",
+            source.name(),
+            source.factory().map(|f| f.name().to_string())
+        );
+
+        // Source caps — request specific format from camera
+        let source_caps = gstreamer::Caps::builder(&options.codec)
+            .field("width", options.width)
+            .field("height", options.height)
+            .field("framerate", gstreamer::Fraction::new(options.framerate, 1))
+            .build();
+        let source_capsfilter = Self::make_capsfilter(&source_caps)?;
+
+        // Decode chain if needed (jpeg → jpegdec, h264 → h264parse + avdec_h264)
+        let decode_elements = Self::build_video_decode_chain(&options.codec)?;
+
+        // Convert to I420
+        let convert = Self::make_element("videoconvert")?;
+        let scale = Self::make_element("videoscale")?;
+
+        let i420_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", VIDEO_FRAME_FORMAT)
+            .field("width", options.width)
+            .field("height", options.height)
+            .field("framerate", gstreamer::Fraction::new(options.framerate, 1))
+            .field("pixel-aspect-ratio", gstreamer::Fraction::new(1, 1))
+            .build();
+        let i420_filter = Self::make_capsfilter(&i420_caps)?;
+
+        // Tee — fan out to stream branch and (later) file branch
+        let tee = Self::make_element("tee")?;
+
+        // Stream branch: scale down for appsink
+        let queue_stream = Self::make_element("queue")?;
+        queue_stream.set_property_from_str("leaky", "downstream");
+
+        let stream_scale = Self::make_element("videoscale")?;
+
+        let stream_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .field("framerate", gstreamer::Fraction::new(options.framerate, 1))
+            .field("format", VIDEO_FRAME_FORMAT)
+            .build();
+        let stream_capsfilter = Self::make_capsfilter(&stream_caps)?;
+
+        let appsink = self.broadcast_appsink(stream_tx.clone(), Some(&stream_caps))?;
+
+        // Add all to pipeline
+        let mut elements: Vec<&gstreamer::Element> = vec![&source, &source_capsfilter];
+        for el in &decode_elements {
+            elements.push(el);
+        }
+        elements.extend_from_slice(&[
+            &convert,
+            &scale,
+            &i420_filter,
+            &tee,
+            &queue_stream,
+            &stream_scale,
+            &stream_capsfilter,
+            appsink.upcast_ref(),
+        ]);
+
+        pipeline.add_many(elements.as_slice()).map_err(|_| {
+            GStreamerError::PipelineError("Failed to add video elements to pipeline".into())
+        })?;
+
+        // Link source chain: source → caps → [decode] → convert → scale → i420 → tee
+        let mut chain: Vec<&gstreamer::Element> = vec![&source, &source_capsfilter];
+        for el in &decode_elements {
+            chain.push(el);
+        }
+        chain.extend_from_slice(&[&convert, &scale, &i420_filter, &tee]);
+
+        gstreamer::Element::link_many(chain).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link video source chain".into())
+        })?;
+
+        // Link tee → stream branch
+        let tee_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for video stream".into())
+        })?;
+        let queue_sink = queue_stream.static_pad("sink").ok_or_else(|| {
+            GStreamerError::PipelineError("Video stream queue has no sink pad".into())
+        })?;
+        tee_pad.link(&queue_sink).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link video tee to stream branch".into())
+        })?;
+
+        gstreamer::Element::link_many([
+            &queue_stream,
+            &stream_scale,
+            &stream_capsfilter,
+            appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link video stream branch".into()))?;
+
+        Ok(VideoChainHandles {
+            tee,
+            appsink_tx: stream_tx,
+        })
+    }
+
+    // Helper methods
+    fn make_element(factory_name: &str) -> Result<gstreamer::Element, GStreamerError> {
+        gstreamer::ElementFactory::make(factory_name)
+            .name(random_string(factory_name))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError(format!("Failed to create {}", factory_name))
+            })
+    }
+
+    fn make_capsfilter(caps: &gstreamer::Caps) -> Result<gstreamer::Element, GStreamerError> {
+        let filter = Self::make_element("capsfilter")?;
+        filter.set_property("caps", caps);
+        Ok(filter)
+    }
+
+    fn build_video_decode_chain(codec: &str) -> Result<Vec<gstreamer::Element>, GStreamerError> {
+        match codec {
+            "image/jpeg" => Ok(vec![Self::make_element("jpegdec")?]),
+            "video/x-h264" => Ok(vec![
+                Self::make_element("h264parse")?,
+                Self::make_element("avdec_h264")?,
+            ]),
+            "video/x-raw" => Ok(vec![]),
+            _ => Err(GStreamerError::PipelineError(format!(
+                "Unsupported video codec: {}",
+                codec
+            ))),
+        }
+    }
+}
+
+pub struct AudioChainHandles {
+    pub tee: gstreamer::Element,
+    pub appsink_tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    pub num_channels: i32,
+}
+
+impl GstMediaDevice {
+    /// Add one or more audio sources to a pipeline, mixed into a single stream.
+    /// Returns handles to the tee after the mixer output.
+    pub fn add_audio_to_pipeline(
+        devices: &[(&GstMediaDevice, &AudioPublishOptions)],
+        pipeline: &gstreamer::Pipeline,
+        stream_tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<AudioChainHandles, GStreamerError> {
+        if devices.is_empty() {
+            return Err(GStreamerError::PipelineError(
+                "No audio devices provided".into(),
+            ));
+        }
+
+        let output_rate = devices[0].1.framerate;
+
+        let output_caps = gstreamer::Caps::builder("audio/x-raw")
+            .field("format", "S16LE")
+            .field("channels", 1i32)
+            .field("rate", output_rate)
+            .field("layout", "interleaved")
+            .build();
+
+        let output_element: gstreamer::Element = if devices.len() == 1 {
+            // Single mic — direct chain, no mixer
+            let (device, _options) = &devices[0];
+            let source = device.get_audio_element()?;
+            let convert = Self::make_element("audioconvert")?;
+            let resample = Self::make_element("audioresample")?;
+            let capsfilter = Self::make_capsfilter(&output_caps)?;
+
+            pipeline
+                .add_many([&source, &convert, &resample, &capsfilter])
+                .map_err(|_| {
+                    GStreamerError::PipelineError("Failed to add audio elements".into())
+                })?;
+
+            gstreamer::Element::link_many([&source, &convert, &resample, &capsfilter]).map_err(
+                |_| GStreamerError::PipelineError("Failed to link audio source chain".into()),
+            )?;
+
+            capsfilter
+        } else {
+            // Multiple mics — use audiomixer
+            let mixer = Self::make_element("audiomixer")?;
+            pipeline
+                .add(&mixer)
+                .map_err(|_| GStreamerError::PipelineError("Failed to add audiomixer".into()))?;
+
+            for (i, (device, _options)) in devices.iter().enumerate() {
+                let source = device.get_audio_element()?;
+                let convert = Self::make_element("audioconvert")?;
+                let resample = Self::make_element("audioresample")?;
+
+                let mic_caps = gstreamer::Caps::builder("audio/x-raw")
+                    .field("format", "S16LE")
+                    .field("channels", 1i32)
+                    .field("rate", output_rate)
+                    .build();
+                let capsfilter = Self::make_capsfilter(&mic_caps)?;
+
+                pipeline
+                    .add_many([&source, &convert, &resample, &capsfilter])
+                    .map_err(|_| {
+                        GStreamerError::PipelineError(format!(
+                            "Failed to add mic {} elements",
+                            i + 1
+                        ))
+                    })?;
+
+                gstreamer::Element::link_many([&source, &convert, &resample, &capsfilter])
+                    .map_err(|_| {
+                        GStreamerError::PipelineError(format!("Failed to link mic {} chain", i + 1))
+                    })?;
+
+                let mixer_pad = mixer.request_pad_simple("sink_%u").ok_or_else(|| {
+                    GStreamerError::PipelineError(format!(
+                        "Failed to request mixer pad for mic {}",
+                        i + 1
+                    ))
+                })?;
+                // Reduce volume to prevent clipping when summing
+                mixer_pad.set_property("volume", 0.5f64);
+
+                let capsfilter_src = capsfilter.static_pad("src").unwrap();
+                capsfilter_src.link(&mixer_pad).map_err(|_| {
+                    GStreamerError::PipelineError(format!("Failed to link mic {} to mixer", i + 1))
+                })?;
+            }
+
+            let output_filter = Self::make_capsfilter(&output_caps)?;
+            pipeline.add(&output_filter).map_err(|_| {
+                GStreamerError::PipelineError("Failed to add output capsfilter".into())
+            })?;
+            mixer.link(&output_filter).map_err(|_| {
+                GStreamerError::PipelineError("Failed to link mixer to output".into())
+            })?;
+
+            output_filter
+        };
+
+        // Tee
+        let tee = Self::make_element("tee")?;
+        pipeline
+            .add(&tee)
+            .map_err(|_| GStreamerError::PipelineError("Failed to add audio tee".into()))?;
+        output_element
+            .link(&tee)
+            .map_err(|_| GStreamerError::PipelineError("Failed to link output to tee".into()))?;
+
+        // Stream branch: tee → queue → appsink
+        let queue_stream = Self::make_element("queue")?;
+        let appsink = devices[0]
+            .0
+            .broadcast_appsink(stream_tx.clone(), Some(&output_caps))?;
+
+        pipeline
+            .add_many([&queue_stream, appsink.upcast_ref()])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add audio stream elements".into())
+            })?;
+
+        let tee_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request audio tee pad".into())
+        })?;
+        let queue_sink = queue_stream
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Audio queue has no sink pad".into()))?;
+        tee_pad.link(&queue_sink).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link audio tee to stream".into())
+        })?;
+
+        gstreamer::Element::link_many([&queue_stream, appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link audio appsink".into()))?;
+
+        Ok(AudioChainHandles {
+            tee,
+            appsink_tx: stream_tx,
+            num_channels: 1,
+        })
+    }
+}
+
+// In media_device.rs
+
+pub struct FileBranchHandles {
+    pub video_mux_pad: gstreamer::Pad,
+    pub audio_mux_pad: gstreamer::Pad,
+    pub muxer: gstreamer::Element,
+}
+
+impl GstMediaDevice {
+    pub fn add_av_file_branch(
+        pipeline: &gstreamer::Pipeline,
+        video_tee: &gstreamer::Element,
+        audio_tee: &gstreamer::Element,
+        path: &str,
+        video_framerate: i32,
+    ) -> Result<FileBranchHandles, GStreamerError> {
+        // ===== VIDEO FILE CHAIN =====
+        let vq = Self::make_element("queue")?;
+        vq.set_property_from_str("leaky", "downstream");
+
+        let vrate = Self::make_element("videorate")?;
+        vrate.set_property("max-rate", 30i32);
+
+        let vconvert = Self::make_element("videoconvert")?;
+
+        let vencoder = Self::make_element("x264enc")?;
+        vencoder.set_property("bitrate", 3000u32);
+        vencoder.set_property_from_str("speed-preset", "ultrafast");
+
+        let vparser = Self::make_element("h264parse")?;
+
+        // ===== AUDIO FILE CHAIN =====
+        let aq = Self::make_element("queue")?;
+
+        let aconvert = Self::make_element("audioconvert")?;
+        let aresample = Self::make_element("audioresample")?;
+
+        let arate = Self::make_element("audiorate")?;
+        arate.set_property("tolerance", 40000000u64);
+
+        let aencoder = Self::make_element("avenc_aac")?;
+        aencoder.set_property("bitrate", 128000i32);
+
+        let aparser = Self::make_element("aacparse")?;
+
+        // ===== MUXER + FILESINK =====
+        let muxer = Self::make_element("mp4mux")?;
+        muxer.set_property_from_str("faststart", "true");
+
+        let filesink = Self::make_element("filesink")?;
+        filesink.set_property("location", path);
+        filesink.set_property("sync", false);
+
+        // Add all to pipeline
+        pipeline
+            .add_many([
+                &vq, &vrate, &vconvert, &vencoder, &vparser, &aq, &aconvert, &aresample, &arate,
+                &aencoder, &aparser, &muxer, &filesink,
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add file branch elements".into())
+            })?;
+
+        // Link video file chain (up to parser)
+        gstreamer::Element::link_many([&vq, &vrate, &vconvert, &vencoder, &vparser])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link video file chain".into()))?;
+
+        // Link audio file chain (up to parser)
+        gstreamer::Element::link_many([&aq, &aconvert, &aresample, &arate, &aencoder, &aparser])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link audio file chain".into()))?;
+
+        // Request muxer pads explicitly — probe them for timing
+        let video_mux_pad = muxer.request_pad_simple("video_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request video mux pad".into())
+        })?;
+
+        let audio_mux_pad = muxer.request_pad_simple("audio_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request audio mux pad".into())
+        })?;
+
+        // Link parsers to muxer pads
+        let vparser_src = vparser
+            .static_pad("src")
+            .ok_or_else(|| GStreamerError::PipelineError("Video parser has no src pad".into()))?;
+        vparser_src.link(&video_mux_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link video parser to muxer".into())
+        })?;
+
+        let aparser_src = aparser
+            .static_pad("src")
+            .ok_or_else(|| GStreamerError::PipelineError("Audio parser has no src pad".into()))?;
+        aparser_src.link(&audio_mux_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link audio parser to muxer".into())
+        })?;
+
+        // Link muxer to filesink
+        muxer.link(&filesink).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link muxer to filesink".into())
+        })?;
+
+        // Connect video tee to video file chain
+        let vtee_pad = video_tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request video tee pad".into())
+        })?;
+        let vq_sink = vq
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Video queue has no sink pad".into()))?;
+        vtee_pad.link(&vq_sink).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link video tee to file branch".into())
+        })?;
+
+        // Connect audio tee to audio file chain
+        let atee_pad = audio_tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request audio tee pad".into())
+        })?;
+        let aq_sink = aq
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Audio queue has no sink pad".into()))?;
+        atee_pad.link(&aq_sink).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link audio tee to file branch".into())
+        })?;
+
+        // // After linking parsers to muxer pads, add debug probes:
+        // let vparser_src_probe = vparser.static_pad("src").unwrap();
+        // // vparser_src_probe.add_probe(gstreamer::PadProbeType::BUFFER, |_pad, _info| {
+        // //     eprintln!("[DEBUG] Video buffer reaching muxer");
+        // //     gstreamer::PadProbeReturn::Ok
+        // // });
+
+        // let aparser_src_probe = aparser.static_pad("src").unwrap();
+        // aparser_src_probe.add_probe(gstreamer::PadProbeType::BUFFER, |_pad, _info| {
+        //     eprintln!("[DEBUG] Audio buffer reaching muxer");
+        //     gstreamer::PadProbeReturn::Ok
+        // });
+
+        Ok(FileBranchHandles {
+            video_mux_pad,
+            audio_mux_pad,
+            muxer,
+        })
+    }
 }
 
 impl GstMediaDevice {

@@ -1,4 +1,4 @@
-import type { MediaDeviceInfo, PublishOptions } from './components/types';
+import type { MediaDeviceInfo, PublishOptions, AvMixMode } from './components/types';
 import { invoke } from '@tauri-apps/api/core';
 
 export let devicesStore: {
@@ -10,6 +10,11 @@ export let devicesStore: {
     getStreamingConfigFn: () => () => Record<string, boolean>;
     getFn: () => () => Record<string, PublishOptions>;
     refreshAvailableDevices: () => Promise<void>;
+    // AV Mix functions
+    getAvMixMode: () => boolean;
+    setAvMixMode: (enabled: boolean) => void;
+    getAvMixRoles: () => Record<string, AvMixMode>;
+    setAvMixRole: (deviceId: string, role: AvMixMode | undefined) => void;
 } | null = null;
 
 export function initialize(avaliableDevices: MediaDeviceInfo[]) {
@@ -18,6 +23,8 @@ export function initialize(avaliableDevices: MediaDeviceInfo[]) {
         JSON.parse(JSON.stringify(avaliableDevices)) as MediaDeviceInfo[]
     );
     let streamingConfigStore = $state({}) as Record<string, boolean>;
+    let avMixModeStore = $state(false);
+    let avMixRolesStore = $state({}) as Record<string, AvMixMode>;
 
     devicesStore = {
         addDevice: (device: PublishOptions, alsoStream = true) => {
@@ -77,6 +84,26 @@ export function initialize(avaliableDevices: MediaDeviceInfo[]) {
             } catch (error) {
                 console.error('Failed to refresh available devices:', error);
             }
+        },
+        // AV Mix functions
+        getAvMixMode: () => avMixModeStore,
+        setAvMixMode: (enabled: boolean) => {
+            avMixModeStore = enabled;
+            if (!enabled) {
+                // Clear all AV mix roles when disabling
+                avMixRolesStore = {};
+            }
+        },
+        getAvMixRoles: () => avMixRolesStore,
+        setAvMixRole: (deviceId: string, role: AvMixMode | undefined) => {
+            console.log('Setting avmix role:', deviceId, role);
+            if (role) {
+                avMixRolesStore[deviceId] = role;
+            } else {
+                delete avMixRolesStore[deviceId];
+            }
+            avMixRolesStore = { ...avMixRolesStore };
+            console.log('Updated avMixRolesStore:', avMixRolesStore);
         },
     };
 }

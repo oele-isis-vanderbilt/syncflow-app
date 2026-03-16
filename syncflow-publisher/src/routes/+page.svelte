@@ -22,6 +22,10 @@
         getRemainingDevicesFn,
         getStreamingConfigFn,
         refreshAvailableDevices,
+        getAvMixMode,
+        setAvMixMode,
+        getAvMixRoles,
+        setAvMixRole,
     } = devicesStore!;
 
     let availableDevicesToSelect = $derived.by(() => {
@@ -90,6 +94,10 @@
                 selectedDevicesFn={getSelectedDevicesFn()}
                 onRemoveDevice={removeDevice}
                 streamingConfigFn={getStreamingConfigFn()}
+                avMixMode={getAvMixMode()}
+                avMixRoles={getAvMixRoles()}
+                onAvMixModeChange={setAvMixMode}
+                onAvMixRoleChange={setAvMixRole}
             />
         </div>
     </div>
@@ -110,16 +118,18 @@
                 const streamingConfigFn = getStreamingConfigFn();
                 const selectedDevices = selectedDevicesFn();
                 const streamingConfigs = streamingConfigFn();
+                const avMixMode = getAvMixMode();
+                const avMixRoles = getAvMixRoles();
+
                 const recordingAndStreamingConfig: DeviceRecordingAndStreamingConfig[] =
                     selectedDevices.map((option) => {
+                        const deviceId =
+                            option.kind === 'Screen' ? option.screenIdOrName : option.deviceId;
+
                         return {
-                            enableStreaming:
-                                streamingConfigs[
-                                    option.kind === 'Screen'
-                                        ? option.screenIdOrName
-                                        : option.deviceId
-                                ],
+                            enableStreaming: streamingConfigs[deviceId],
                             publishOptions: option,
+                            avMixMode: avMixMode ? avMixRoles[deviceId] : undefined,
                         };
                     });
 

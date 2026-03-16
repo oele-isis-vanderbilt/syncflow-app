@@ -1,6 +1,7 @@
 use crate::media_device::GStreamerError;
 use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
+use crate::{AudioPublishOptions, AvMixStream, VideoPublishOptions};
 use gstreamer::prelude::ClockExt;
 use gstreamer::Buffer;
 use livekit::options::{TrackPublishOptions, VideoCodec};
@@ -47,8 +48,14 @@ struct TrackHandle {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Debug)]
+pub enum MediaStream {
+    Individual(GstMediaStream),
+    AvMix(AvMixStream),
+}
+
 pub struct StreamingHandlingConfig {
-    pub gst_media_stream: GstMediaStream,
+    pub media_stream: MediaStream,
     pub publish_to_livekit: bool,
 }
 
@@ -76,47 +83,201 @@ impl LKParticipant {
         Ok(())
     }
 
+    pub async fn publish_avmix_stream_audio(
+        &mut self,
+        stream: &mut AvMixStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            return Err(LKParticipantError::GStreamerError(
+                GStreamerError::PipelineError("Stream has not started".into()),
+            ));
+        }
+        let (frames_rx, close_rx) = stream.subscribe_audio().unwrap();
+        let audio_options = stream.get_audio_publish_options();
+        let track_name = format!(
+            "{}-{}",
+            self.room.local_participant().name(),
+            "AV Mix Audio"
+        );
+
+        let rtc_source = NativeAudioSource::new(
+            Default::default(),
+            audio_options.framerate as u32,
+            audio_options.channels as u32,
+            2000,
+        );
+
+        let track = LocalAudioTrack::create_audio_track(
+            &track_name,
+            RtcAudioSource::Native(rtc_source.clone()),
+        );
+
+        let track_sid = random_string("audio-track");
+
+        let task = tokio::spawn(Self::audio_track_task(
+            close_rx,
+            frames_rx,
+            rtc_source.clone(),
+        ));
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Microphone,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.published_tracks.insert(
+            track_sid.clone(),
+            TrackHandle {
+                track: LocalTrack::Audio(track),
+                task,
+            },
+        );
+
+        Ok(track_sid)
+    }
+
+    pub async fn publish_avmix_stream_video(
+        &mut self,
+        stream: &mut AvMixStream,
+        track_name: Option<String>,
+    ) -> Result<String, LKParticipantError> {
+        if !stream.has_started() {
+            return Err(LKParticipantError::GStreamerError(
+                GStreamerError::PipelineError("Stream has not started".into()),
+            ));
+        }
+        let (frames_rx, close_rx) = stream.subscribe_video().unwrap();
+        let video_options = stream.get_video_publish_options();
+        let track_name = format!(
+            "{}-{}",
+            self.room.local_participant().name(),
+            "AV Mix Video"
+        );
+
+        let rtc_source = NativeVideoSource::new(VideoResolution {
+            width: 640,  // video_options.width as u32,
+            height: 480, // video_options.height as u32,
+        });
+
+        let track = LocalVideoTrack::create_video_track(
+            &track_name,
+            RtcVideoSource::Native(rtc_source.clone()),
+        );
+
+        let track_sid = random_string("video-track");
+
+        let task = tokio::spawn(Self::video_track_task(
+            close_rx,
+            frames_rx,
+            rtc_source.clone(),
+        ));
+
+        self.room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Camera,
+                    simulcast: false,
+                    video_codec: VideoCodec::VP9,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.published_tracks.insert(
+            track_sid.clone(),
+            TrackHandle {
+                track: LocalTrack::Video(track),
+                task,
+            },
+        );
+
+        Ok(track_sid)
+    }
+
     pub async fn handle_streams(
         &mut self,
         configs: &mut [StreamingHandlingConfig],
     ) -> Result<(), LKParticipantError> {
-        let mut recording_metadatas = vec![];
-
+        // Build pipelines for all streams
         for config in configs.iter_mut() {
-            let (_, metadata) = config.gst_media_stream.build_pipeline().await?;
-            recording_metadatas.push(metadata);
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.build_pipeline().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.build_pipeline().await?;
+                }
+            }
         }
 
-        let preroll_futures: Vec<_> = configs
-            .iter_mut()
-            .map(|config| config.gst_media_stream.preroll_pipeline())
-            .collect();
-
-        futures::future::try_join_all(preroll_futures).await?;
-
-        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
-            config.gst_media_stream.set_pipeline_clock(
-                &self.master_clock,
-                self.base_time,
-                metadata.as_mut(),
-            )?;
+        // Preroll all streams
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.preroll_pipeline().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.preroll_pipeline().await?;
+                }
+            }
         }
 
-        for (config, metadata) in configs.iter_mut().zip(recording_metadatas.iter_mut()) {
-            config.gst_media_stream.play_pipeline(metadata.as_mut())?;
+        // Set clock for all streams
+        for (i, config) in configs.iter_mut().enumerate() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.set_pipeline_clock(&self.master_clock, self.base_time)?;
+                }
+            }
         }
 
-        let bus_loop_futures: Vec<_> = configs
-            .iter_mut()
-            .zip(recording_metadatas.iter_mut())
-            .map(|(config, metadata)| config.gst_media_stream.run_bus_loop(metadata.as_mut()))
-            .collect();
+        // Start all streams
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.play_pipeline()?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.play_pipeline()?;
+                }
+            }
+        }
 
-        futures::future::try_join_all(bus_loop_futures).await?;
+        // Run bus loops
+        for config in configs.iter_mut() {
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    gst_stream.run_bus_loop().await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    av_stream.run_bus_loop().await?;
+                }
+            }
+        }
 
+        // Publish streams to LiveKit if enabled
         for config in configs.iter_mut().filter(|c| c.publish_to_livekit) {
-            self.publish_stream(&mut config.gst_media_stream, None)
-                .await?;
+            match &mut config.media_stream {
+                MediaStream::Individual(gst_stream) => {
+                    self.publish_stream(gst_stream, None).await?;
+                }
+                MediaStream::AvMix(av_stream) => {
+                    self.publish_avmix_stream_audio(av_stream, None).await?;
+                    self.publish_avmix_stream_video(av_stream, None).await?;
+                }
+            }
         }
 
         Ok(())

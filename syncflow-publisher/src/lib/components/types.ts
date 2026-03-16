@@ -91,7 +91,10 @@ export type PublishOptions =
 export interface DeviceRecordingAndStreamingConfig {
     enableStreaming: boolean;
     publishOptions: PublishOptions;
+    avMixMode?: AvMixMode;
 }
+
+export type AvMixMode = 'primary' | 'mic1' | 'mic2';
 
 export interface NewSessionMessage {
     sessionId: string;
