@@ -1,11 +1,13 @@
 use livekit_gstreamer::PublishOptions;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 use syncflow_client::ProjectClient;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::{register::RegistrationResponse, session_listener::SessionListener};
 
@@ -53,10 +55,20 @@ impl From<S3Config> for rusoto_s3::S3Client {
     }
 }
 
+#[derive(Debug)]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub session_name: String,
+    pub cancel_token: CancellationToken,
+    pub task_handle: tauri::async_runtime::JoinHandle<()>,
+}
+
 pub struct AppState {
     pub client: Arc<Mutex<Option<ProjectClient>>>,
     pub app_dir: PathBuf,
     pub registration: Arc<Mutex<Option<RegistrationResponse>>>,
     pub recording_and_streaming_config: Arc<Mutex<Option<Vec<DeviceRecordingAndStreamingConfig>>>>,
     pub session_listener: Arc<AsyncMutex<Option<SessionListener>>>,
+    pub active_sessions: Arc<AsyncMutex<HashMap<String, ActiveSession>>>,
+    pub currently_joined_session: Arc<AsyncMutex<Option<String>>>,
 }

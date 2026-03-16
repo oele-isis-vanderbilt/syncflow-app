@@ -897,13 +897,27 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 [[package]]
 name = "client"
 version = "0.1.0"
+source = "git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification#27ed37cbab631d6e870fc4673f15223cb3891a9f"
+dependencies = [
+ "jsonwebtoken",
+ "livekit-protocol 0.3.10",
+ "reqwest 0.12.22",
+ "serde",
+ "shared 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification)",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "client"
+version = "0.1.0"
 source = "git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main#ba09e14d75aa40229bb34ff3569f27e0f20c30a8"
 dependencies = [
  "jsonwebtoken",
  "livekit-protocol 0.3.10",
  "reqwest 0.12.22",
  "serde",
- "shared",
+ "shared 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main)",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -3322,7 +3336,7 @@ version = "0.0.1"
 dependencies = [
  "amqprs",
  "chrono",
- "client",
+ "client 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main)",
  "display-info",
  "dotenvy",
  "env_logger",
@@ -3337,7 +3351,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
- "shared",
+ "shared 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main)",
  "thiserror 2.0.12",
  "tokio",
 ]
@@ -5653,6 +5667,25 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
+source = "git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification#27ed37cbab631d6e870fc4673f15223cb3891a9f"
+dependencies = [
+ "actix-web",
+ "dotenvy",
+ "envious",
+ "jsonwebtoken",
+ "livekit-api 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "livekit-protocol 0.3.10",
+ "log",
+ "rand 0.8.5",
+ "reqwest 0.11.27",
+ "serde",
+ "thiserror 1.0.69",
+ "utoipa",
+]
+
+[[package]]
+name = "shared"
+version = "0.1.0"
 source = "git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main#ba09e14d75aa40229bb34ff3569f27e0f20c30a8"
 dependencies = [
  "actix-web",
@@ -5919,7 +5952,7 @@ name = "syncflow-publisher"
 version = "0.1.0"
 dependencies = [
  "amqprs",
- "client",
+ "client 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification)",
  "dirs",
  "gethostname",
  "livekit",
@@ -5931,7 +5964,7 @@ dependencies = [
  "rusoto_s3",
  "serde",
  "serde_json",
- "shared",
+ "shared 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification)",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
