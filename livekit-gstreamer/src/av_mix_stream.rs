@@ -240,6 +240,7 @@ impl AvMixStream {
 
     pub async fn stop(&mut self) -> Result<(), GStreamerError> {
         if let Some(handle) = self.handle.take() {
+            handle.close_tx.send(()).ok();
             handle.pipeline.send_event(gstreamer::event::Eos::new());
             if let Some(task) = handle.task {
                 let _ = task.await;

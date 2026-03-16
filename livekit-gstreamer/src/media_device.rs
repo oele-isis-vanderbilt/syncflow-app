@@ -279,7 +279,7 @@ pub async fn run_bus_loop(
     .map_err(|_| GStreamerError::PipelineError("spawn_blocking panicked".to_string()))??
     .map(|metadata| metadata.write_success());
 
-    tx.send(()).ok();
+    // tx.send(()).ok();
     Ok(())
 }
 

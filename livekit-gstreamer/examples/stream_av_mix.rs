@@ -10,13 +10,13 @@ async fn main() -> Result<(), GStreamerError> {
 
     let mic1 = AudioPublishOptions {
         #[cfg(target_os = "windows")]
-        device_id: "{0.0.1.00000000}.{be006906-f26f-4a69-ac72-e0216303e6cc}".into(),
+        device_id: "{0.0.1.00000000}.{adb4b44e-9063-4483-91b5-b172186b73c7}".into(),
         #[cfg(target_os = "macos")]
         device_id: r"AppleUSBAudioEngine:C-Media Electronics Inc.:USB PnP Sound Device:124000:1"
             .into(),
         codec: "audio/x-raw".into(),
         #[cfg(target_os = "windows")]
-        framerate: 44100,
+        framerate: 48000,
         #[cfg(target_os = "macos")]
         framerate: 48000,
         #[cfg(target_os = "windows")]
@@ -37,7 +37,7 @@ async fn main() -> Result<(), GStreamerError> {
             .into(),
         codec: "audio/x-raw".into(),
         #[cfg(target_os = "windows")]
-        framerate: 44100,
+        framerate: 48000,
         #[cfg(target_os = "macos")]
         framerate: 48000,
         #[cfg(target_os = "windows")]
