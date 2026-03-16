@@ -1,4 +1,5 @@
 use std::{path::PathBuf, sync::Arc, vec};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::SyncFlowPublisherError,
@@ -94,6 +95,32 @@ pub async fn record_publish_to_syncflow(
     out_dir: &PathBuf,
     s3_client: Option<rusoto_s3::S3Client>,
     bucket_name: Option<String>,
+) {
+    let cancel_token = CancellationToken::new();
+    record_publish_to_syncflow_with_cancellation(
+        participant_name,
+        session_details,
+        configs,
+        event_emitter,
+        project_client,
+        out_dir,
+        s3_client,
+        bucket_name,
+        cancel_token,
+    )
+    .await
+}
+
+pub async fn record_publish_to_syncflow_with_cancellation(
+    participant_name: String,
+    session_details: NewSessionMessage,
+    configs: Vec<DeviceRecordingAndStreamingConfig>,
+    event_emitter: tauri::AppHandle,
+    project_client: &syncflow_client::ProjectClient,
+    out_dir: &PathBuf,
+    s3_client: Option<rusoto_s3::S3Client>,
+    bucket_name: Option<String>,
+    cancel_token: CancellationToken,
 ) {
     let participant_name = participant_name.replace(".", "-").replace(" ", "-");
     let session_id = session_details.session_id.clone();
@@ -270,17 +297,19 @@ pub async fn record_publish_to_syncflow(
         );
     }
 
-    while let Some(msg) = room_rx.recv().await {
-        match msg {
-            livekit::RoomEvent::Disconnected { reason } => {
-                println!("Disconnected from room: {:?}", reason);
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = cancel_token.cancelled() => {
+                println!("Session cancelled by user: {}", session_id);
                 for config in streaming_configs.iter_mut() {
                     match &mut config.media_stream {
                         MediaStream::Individual(gst_stream) => {
-                            gst_stream.stop().await.unwrap();
+                            let _ = gst_stream.stop().await;
                         }
                         MediaStream::AvMix(av_stream) => {
-                            av_stream.stop().await.unwrap();
+                            let _ = av_stream.stop().await;
                         }
                     }
                 }
@@ -292,8 +321,37 @@ pub async fn record_publish_to_syncflow(
                 );
                 break;
             }
-            _ => {
-                println!("Received room event: {:?}", msg);
+
+            msg = room_rx.recv() => {
+                match msg {
+                    Some(livekit::RoomEvent::Disconnected { reason }) => {
+                        println!("Disconnected from room: {:?}", reason);
+                        for config in streaming_configs.iter_mut() {
+                            match &mut config.media_stream {
+                                MediaStream::Individual(gst_stream) => {
+                                    let _ = gst_stream.stop().await;
+                                }
+                                MediaStream::AvMix(av_stream) => {
+                                    let _ = av_stream.stop().await;
+                                }
+                            }
+                        }
+                        let _ = event_emitter.emit(
+                            "publication-notification",
+                            PublicationNotification::SessionEnded(SessionEndedData {
+                                session_id: session_id.clone(),
+                            }),
+                        );
+                        break;
+                    }
+                    Some(msg) => {
+                        println!("Received room event: {:?}", msg);
+                    }
+                    None => {
+                        println!("Room channel closed");
+                        break;
+                    }
+                }
             }
         }
     }
