@@ -1,6 +1,14 @@
 <script lang="ts">
     import SelectedDevices from '$lib/components/SelectedDevices.svelte';
-    import { Accordion, AccordionItem, Button, Progressbar } from 'flowbite-svelte';
+    import {
+        Accordion,
+        AccordionItem,
+        Button,
+        Progressbar,
+        Tabs,
+        TabItem,
+        Input,
+    } from 'flowbite-svelte';
     import type { PageProps } from './$types';
     import { invoke } from '@tauri-apps/api/core';
     import { goto } from '$app/navigation';
@@ -14,6 +22,9 @@
     } from '$lib/components/types';
 
     let { data }: PageProps = $props();
+
+    // Get recording mode from data (with proper typing)
+    const recordingMode: 'sessionMode' | 'localMode' = (data as any).recordingMode || 'sessionMode';
 
     // Initialize store and restore state from backend config
     initialize(data.devices);
@@ -46,17 +57,33 @@
     let allSessions = $state<Array<[string, string, boolean]>>([]);
     let currentlyJoinedSession = $state<string | null>(null);
 
+    // Local recording mode state
+    let isLocalRecording = $state<boolean>(false);
+    let activeLocalSessionId = $state<string | null>(null);
+
+    // Generate automatic session name with local time
+    function generateLocalSessionName(): string {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        return `recording-${year}-${month}-${day}-${hours}-${minutes}-${seconds}`;
+    }
+
     // Load all sessions and currently joined session on page load
     Promise.all([
         invoke<Array<[string, string, boolean]>>('get_all_sessions'),
-        invoke<string | null>('get_currently_joined_session')
+        invoke<string | null>('get_currently_joined_session'),
     ]).then(([sessions, joinedSession]) => {
         allSessions = sessions;
         currentlyJoinedSession = joinedSession;
         // Convert to session messages format for unified display
         sessionMessages = sessions.map(([id, name, _active]) => ({
             sessionId: id,
-            sessionName: name || id
+            sessionName: name || id,
         }));
     });
 
@@ -65,37 +92,65 @@
         // Refresh all sessions and currently joined session when any session changes
         Promise.all([
             invoke<Array<[string, string, boolean]>>('get_all_sessions'),
-            invoke<string | null>('get_currently_joined_session')
-        ]).then(([sessions, joinedSession]) => {
-            allSessions = sessions;
-            currentlyJoinedSession = joinedSession;
-            // Update session messages to include all current sessions
-            const newSessionIds = new Set(sessions.map(([id, _, _active]) => id));
-            const existingSessionIds = new Set(sessionMessages.map(msg => msg.sessionId));
-            
-            // Add any new sessions that aren't already in sessionMessages
-            sessions.forEach(([id, name, _active]) => {
-                if (!existingSessionIds.has(id)) {
-                    sessionMessages.push({ sessionId: id, sessionName: name || id });
-                }
+            invoke<string | null>('get_currently_joined_session'),
+        ])
+            .then(([sessions, joinedSession]) => {
+                allSessions = sessions;
+                currentlyJoinedSession = joinedSession;
+                // Update session messages to include all current sessions
+                const existingSessionIds = new Set(sessionMessages.map((msg) => msg.sessionId));
+
+                // Add any new sessions that aren't already in sessionMessages
+                sessions.forEach(([id, name, _active]) => {
+                    if (!existingSessionIds.has(id)) {
+                        sessionMessages.push({ sessionId: id, sessionName: name || id });
+                    }
+                });
+
+                sessionMessages = [...sessionMessages];
+            })
+            .catch((error) => {
+                console.error('Failed to update sessions:', error);
             });
-            
-            sessionMessages = [...sessionMessages];
-        }).catch(error => {
-            console.error('Failed to update sessions:', error);
-        });
     });
 
     listen<PublicationNotification>('publication-notification', (event) => {
         const notification = event.payload as PublicationNotification;
         publicationNotifications.push(notification);
         publicationNotifications = [...publicationNotifications];
-        
-        // Refresh all sessions when sessions end
+
+        // Add local recording sessions to sessionMessages when they start
+        if (notification.kind === 'streamingSuccess') {
+            const existingSession = sessionMessages.find(
+                (msg) => msg.sessionId === notification.sessionId
+            );
+            if (!existingSession) {
+                sessionMessages.push({
+                    sessionId: notification.sessionId,
+                    sessionName: notification.sessionName,
+                });
+                sessionMessages = [...sessionMessages];
+            }
+
+            // Track active local session for recording indicator
+            if (notification.sessionId.startsWith('local-')) {
+                activeLocalSessionId = notification.sessionId;
+                isLocalRecording = true;
+            }
+        }
+
+        // Handle session ended notifications
         if (notification.kind === 'sessionEnded') {
+            // Clear local recording state if it's the active local session
+            if (notification.sessionId === activeLocalSessionId) {
+                isLocalRecording = false;
+                activeLocalSessionId = null;
+            }
+
+            // Refresh server sessions
             Promise.all([
                 invoke<Array<[string, string, boolean]>>('get_all_sessions'),
-                invoke<string | null>('get_currently_joined_session')
+                invoke<string | null>('get_currently_joined_session'),
             ]).then(([sessions, joinedSession]) => {
                 allSessions = sessions;
                 currentlyJoinedSession = joinedSession;
@@ -171,34 +226,29 @@
             console.error('Failed to rejoin session:', error);
         }
     }
-    
-    function isSessionActive(sessionId: string): boolean {
-        return allSessions.some(([id, _name, active]) => id === sessionId && active);
-    }
-    
+
     function isSessionAvailableOnServer(sessionId: string): boolean {
         return allSessions.some(([id, _name, _active]) => id === sessionId);
     }
-    
+
     async function refreshSessions() {
         try {
             const [sessions, joinedSession] = await Promise.all([
                 invoke<Array<[string, string, boolean]>>('get_all_sessions'),
-                invoke<string | null>('get_currently_joined_session')
+                invoke<string | null>('get_currently_joined_session'),
             ]);
             allSessions = sessions;
             currentlyJoinedSession = joinedSession;
             // Update session messages to include all current sessions
-            const newSessionIds = new Set(sessions.map(([id, _, _active]) => id));
-            const existingSessionIds = new Set(sessionMessages.map(msg => msg.sessionId));
-            
+            const existingSessionIds = new Set(sessionMessages.map((msg) => msg.sessionId));
+
             // Add any new sessions that aren't already in sessionMessages
             sessions.forEach(([id, name, _active]) => {
                 if (!existingSessionIds.has(id)) {
                     sessionMessages.push({ sessionId: id, sessionName: name || id });
                 }
             });
-            
+
             sessionMessages = [...sessionMessages];
         } catch (error) {
             console.error('Failed to refresh sessions:', error);
@@ -236,174 +286,397 @@
     >
         Reconfigure Devices
     </Button>
-    <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
-        <h2 class="text-xl font-semibold text-gray-800 mb-4">Stream Status</h2>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="space-y-3">
-                <div>
-                    <span class="text-sm font-medium text-gray-600">Local Recorded Devices:</span>
-                    <p class="text-gray-800">
-                        {data.streamingConfigs.length} device(s)
-                    </p>
-                </div>
+    <!-- Main content with tabs -->
+    <Tabs style="underline" class="mb-6">
+        {#if recordingMode === 'sessionMode'}
+            <TabItem open={true} title="Session Listener">
+                <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4">Stream Status</h2>
 
-                <div>
-                    <span class="text-sm font-medium text-gray-600">Streaming Devices:</span>
-                    <p class="text-gray-800">
-                        {data.streamingConfigs.filter((data) => data.enableStreaming).length} device(s)
-                    </p>
-                </div>
-            </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="space-y-3">
+                            <div>
+                                <span class="text-sm font-medium text-gray-600"
+                                    >Local Recorded Devices:</span
+                                >
+                                <p class="text-gray-800">
+                                    {data.streamingConfigs.length} device(s)
+                                </p>
+                            </div>
 
-            <div class="flex items-center justify-center">
-                <div class="text-center">
-                    <div
-                        class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800"
-                    >
-                        <div class="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
-                        Listening
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+                            <div>
+                                <span class="text-sm font-medium text-gray-600"
+                                    >Streaming Devices:</span
+                                >
+                                <p class="text-gray-800">
+                                    {data.streamingConfigs.filter((data) => data.enableStreaming)
+                                        .length} device(s)
+                                </p>
+                            </div>
+                        </div>
 
-    <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
-        <div class="flex justify-between items-center mb-4">
-            <div>
-                <h2 class="text-xl font-semibold text-gray-800 mb-2">Session Messages</h2>
-                <div class="flex items-center gap-4 text-sm text-gray-600">
-                    <div class="flex items-center gap-1">
-                        <div class="w-3 h-3 bg-green-500 animate-pulse rounded-full"></div>
-                        <span>Currently joined</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                        <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
-                        <span>Available to join</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                        <div class="w-3 h-3 bg-red-500 rounded-full"></div>
-                        <span>Ended</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                        <div class="w-3 h-3 bg-gray-500 rounded-full"></div>
-                        <span>Unavailable</span>
-                    </div>
-                </div>
-            </div>
-            <Button
-                color="blue"
-                size="sm"
-                onclick={refreshSessions}
-            >
-                Refresh
-            </Button>
-        </div>
-        <Accordion class="w-full">
-            {#each sessionMessages as message, index (message.sessionId)}
-                <AccordionItem open={index === sessionMessages.length - 1}>
-                    {#snippet header()}
-                        <div class="flex items-center justify-between w-full">
-                            <h2 class="text-lg font-medium text-gray-900">
-                                {message.sessionName}({message.sessionId})
-                            </h2>
-                            <div class="flex items-center gap-2">
-                                <div class="flex-shrink-0">
-                                    {#if endedSessions.has(message.sessionId)}
-                                        <div class="w-5 h-5 bg-red-500 rounded-full" title="Session ended"></div>
-                                    {:else if currentlyJoinedSession === message.sessionId}
-                                        <div class="w-5 h-5 bg-green-500 animate-pulse rounded-full" title="Currently joined"></div>
-                                    {:else if isSessionAvailableOnServer(message.sessionId)}
-                                        <div class="w-5 h-5 bg-blue-500 rounded-full" title="Available to join"></div>
-                                    {:else}
-                                        <div class="w-5 h-5 bg-gray-500 rounded-full" title="Unavailable"></div>
-                                    {/if}
-                                </div>
-                                <div class="flex gap-2 mr-2">
-                                    {#if currentlyJoinedSession === message.sessionId}
-                                        <Button
-                                            color="red"
-                                            size="xs"
-                                            onclick={(e: Event) => {
-                                                e.stopPropagation();
-                                                exitSession(message.sessionId);
-                                            }}
-                                        >
-                                            Exit
-                                        </Button>
-                                    {:else if isSessionAvailableOnServer(message.sessionId) && !endedSessions.has(message.sessionId)}
-                                        <Button
-                                            color="green"
-                                            size="xs"
-                                            onclick={(e: Event) => {
-                                                e.stopPropagation();
-                                                rejoinSession(message.sessionId, message.sessionName);
-                                            }}
-                                        >
-                                            Join
-                                        </Button>
-                                    {:else if !endedSessions.has(message.sessionId)}
-                                        <Button
-                                            color="gray"
-                                            size="xs"
-                                            disabled
-                                        >
-                                            Unavailable
-                                        </Button>
-                                    {:else}
-                                        <span class="text-xs text-gray-500">Ended</span>
-                                    {/if}
+                        <div class="flex items-center justify-center">
+                            <div class="text-center">
+                                <div
+                                    class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800"
+                                >
+                                    <div
+                                        class="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"
+                                    ></div>
+                                    Listening for Sessions
                                 </div>
                             </div>
                         </div>
-                    {/snippet}
-                    <div class="space-y-4 mt-4">
-                        {#if successes[message.sessionId]}
-                            <div class="bg-green-50 p-4 rounded-lg border border-green-200">
-                                <h3 class="text-md font-semibold text-green-800 mb-2">Messeges</h3>
-                                {#each successes[message.sessionId] as success}
-                                    <pre
-                                        class="text-sm text-green-900 bg-green-100 p-2 rounded">{JSON.stringify(
-                                            success,
-                                            null,
-                                            2
-                                        )}</pre>
-                                {/each}
-                            </div>
-                        {/if}
-                        {#if failures[message.sessionId]}
-                            <div class="bg-red-50 p-4 rounded-lg border border-red-200">
-                                <h3 class="text-md font-semibold text-red-800 mb-2">Failures</h3>
-                                {#each failures[message.sessionId] as failure}
-                                    <pre
-                                        class="text-sm text-red-900 bg-red-100 p-2 rounded">{JSON.stringify(
-                                            failure,
-                                            null,
-                                            2
-                                        )}</pre>
-                                {/each}
-                            </div>
-                        {/if}
-                        {#if uploadProgress[message.sessionId] !== undefined}
-                            <div class="space-y-2 mb-10">
-                                <h3 class="text-md font-semibold text-gray-800">Upload Progress</h3>
-                                <Progressbar
-                                    progress={uploadProgress[message.sessionId]}
-                                    labelInside
-                                    class="h-6"
-                                    color="green"
-                                    size="h-6"
-                                >
-                                    <span class="text-sm font-medium text-gray-700">
-                                        {uploadProgress[message.sessionId]}%
-                                    </span>
-                                </Progressbar>
-                            </div>
-                        {/if}
                     </div>
-                </AccordionItem>
-            {/each}
-        </Accordion>
-    </div>
+                </div>
+
+                <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <h2 class="text-xl font-semibold text-gray-800 mb-2">
+                                Session Messages
+                            </h2>
+                            <div class="flex items-center gap-4 text-sm text-gray-600">
+                                <div class="flex items-center gap-1">
+                                    <div
+                                        class="w-3 h-3 bg-green-500 animate-pulse rounded-full"
+                                    ></div>
+                                    <span>Currently joined</span>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
+                                    <span>Available to join</span>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                                    <span>Ended</span>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <div class="w-3 h-3 bg-gray-500 rounded-full"></div>
+                                    <span>Unavailable</span>
+                                </div>
+                            </div>
+                        </div>
+                        <Button color="blue" size="sm" onclick={refreshSessions}>Refresh</Button>
+                    </div>
+                    <Accordion class="w-full">
+                        {#each sessionMessages as message, index (message.sessionId)}
+                            <AccordionItem open={index === sessionMessages.length - 1}>
+                                {#snippet header()}
+                                    <div class="flex items-center justify-between w-full">
+                                        <h2 class="text-lg font-medium text-gray-900">
+                                            {message.sessionName}({message.sessionId})
+                                        </h2>
+                                        <div class="flex items-center gap-2">
+                                            <div class="flex-shrink-0">
+                                                {#if endedSessions.has(message.sessionId)}
+                                                    <div
+                                                        class="w-5 h-5 bg-red-500 rounded-full"
+                                                        title="Session ended"
+                                                    ></div>
+                                                {:else if currentlyJoinedSession === message.sessionId}
+                                                    <div
+                                                        class="w-5 h-5 bg-green-500 animate-pulse rounded-full"
+                                                        title="Currently joined"
+                                                    ></div>
+                                                {:else if isSessionAvailableOnServer(message.sessionId)}
+                                                    <div
+                                                        class="w-5 h-5 bg-blue-500 rounded-full"
+                                                        title="Available to join"
+                                                    ></div>
+                                                {:else}
+                                                    <div
+                                                        class="w-5 h-5 bg-gray-500 rounded-full"
+                                                        title="Unavailable"
+                                                    ></div>
+                                                {/if}
+                                            </div>
+                                            <div class="flex gap-2 mr-2">
+                                                {#if currentlyJoinedSession === message.sessionId}
+                                                    <Button
+                                                        color="red"
+                                                        size="xs"
+                                                        onclick={(e: Event) => {
+                                                            e.stopPropagation();
+                                                            exitSession(message.sessionId);
+                                                        }}
+                                                    >
+                                                        Exit
+                                                    </Button>
+                                                {:else if isSessionAvailableOnServer(message.sessionId) && !endedSessions.has(message.sessionId)}
+                                                    <Button
+                                                        color="green"
+                                                        size="xs"
+                                                        onclick={(e: Event) => {
+                                                            e.stopPropagation();
+                                                            rejoinSession(
+                                                                message.sessionId,
+                                                                message.sessionName
+                                                            );
+                                                        }}
+                                                    >
+                                                        Join
+                                                    </Button>
+                                                {:else if !endedSessions.has(message.sessionId)}
+                                                    <Button color="gray" size="xs" disabled>
+                                                        Unavailable
+                                                    </Button>
+                                                {:else}
+                                                    <span class="text-xs text-gray-500">Ended</span>
+                                                {/if}
+                                            </div>
+                                        </div>
+                                    </div>
+                                {/snippet}
+                                <div class="space-y-4 mt-4">
+                                    {#if successes[message.sessionId]}
+                                        <div
+                                            class="bg-green-50 p-4 rounded-lg border border-green-200"
+                                        >
+                                            <h3 class="text-md font-semibold text-green-800 mb-2">
+                                                Messeges
+                                            </h3>
+                                            {#each successes[message.sessionId] as success}
+                                                <pre
+                                                    class="text-sm text-green-900 bg-green-100 p-2 rounded">{JSON.stringify(
+                                                        success,
+                                                        null,
+                                                        2
+                                                    )}</pre>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                    {#if failures[message.sessionId]}
+                                        <div class="bg-red-50 p-4 rounded-lg border border-red-200">
+                                            <h3 class="text-md font-semibold text-red-800 mb-2">
+                                                Failures
+                                            </h3>
+                                            {#each failures[message.sessionId] as failure}
+                                                <pre
+                                                    class="text-sm text-red-900 bg-red-100 p-2 rounded">{JSON.stringify(
+                                                        failure,
+                                                        null,
+                                                        2
+                                                    )}</pre>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                    {#if uploadProgress[message.sessionId] !== undefined}
+                                        <div class="space-y-2 mb-10">
+                                            <h3 class="text-md font-semibold text-gray-800">
+                                                Upload Progress
+                                            </h3>
+                                            <Progressbar
+                                                progress={uploadProgress[message.sessionId]}
+                                                labelInside
+                                                class="h-6"
+                                                color="green"
+                                                size="h-6"
+                                            >
+                                                <span class="text-sm font-medium text-gray-700">
+                                                    {uploadProgress[message.sessionId]}%
+                                                </span>
+                                            </Progressbar>
+                                        </div>
+                                    {/if}
+                                </div>
+                            </AccordionItem>
+                        {/each}
+                    </Accordion>
+                </div>
+            </TabItem>
+        {:else}
+            <TabItem open={true} title="Local Recording">
+                <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                        Local Recording Controls
+                    </h2>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-4">
+                            <div>
+                                <span class="text-sm font-medium text-gray-600"
+                                    >Recording Devices:</span
+                                >
+                                <p class="text-gray-800">
+                                    {data.streamingConfigs.length} device(s)
+                                </p>
+                            </div>
+
+                            <div>
+                                <span class="text-sm font-medium text-gray-600"
+                                    >Upload Enabled:</span
+                                >
+                                <p class="text-gray-800">
+                                    {data.streamingConfigs.filter((data) => data.enableStreaming)
+                                        .length > 0
+                                        ? 'Yes'
+                                        : 'No'}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div class="flex gap-2">
+                                {#if !isLocalRecording}
+                                    <Button
+                                        color="green"
+                                        onclick={async () => {
+                                            try {
+                                                const sessionName = generateLocalSessionName();
+                                                await invoke('start_local_recording', {
+                                                    sessionName,
+                                                });
+                                            } catch (error) {
+                                                console.error(
+                                                    'Failed to start local recording:',
+                                                    error
+                                                );
+                                            }
+                                        }}
+                                    >
+                                        Start Recording
+                                    </Button>
+                                {:else}
+                                    <Button
+                                        color="red"
+                                        onclick={async () => {
+                                            try {
+                                                await invoke('stop_local_recording');
+                                            } catch (error) {
+                                                console.error(
+                                                    'Failed to stop local recording:',
+                                                    error
+                                                );
+                                            }
+                                        }}
+                                    >
+                                        Stop Recording
+                                    </Button>
+                                    <div
+                                        class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800"
+                                    >
+                                        <div
+                                            class="w-2 h-2 bg-red-500 rounded-full mr-2 animate-pulse"
+                                        ></div>
+                                        Recording...
+                                    </div>
+                                {/if}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Local Recording Sessions Display -->
+                {#if sessionMessages.length > 0}
+                    <div class="bg-white rounded-lg shadow-md p-6 border border-gray-200 mt-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                            Local Recording Sessions
+                        </h2>
+                        <div class="flex items-center gap-4 text-sm text-gray-600 mb-4">
+                            <div class="flex items-center gap-1">
+                                <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                                <span>Recording completed</span>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <div class="w-3 h-3 bg-red-500 animate-pulse rounded-full"></div>
+                                <span>Recording in progress</span>
+                            </div>
+                        </div>
+                        <Accordion class="w-full">
+                            {#each sessionMessages.filter( (msg) => msg.sessionId.startsWith('local-') ) as message, index (message.sessionId)}
+                                <AccordionItem
+                                    open={index ===
+                                        sessionMessages.filter((msg) =>
+                                            msg.sessionId.startsWith('local-')
+                                        ).length -
+                                            1}
+                                >
+                                    {#snippet header()}
+                                        <div class="flex items-center justify-between w-full">
+                                            <h2 class="text-lg font-medium text-gray-900">
+                                                {message.sessionName} ({message.sessionId})
+                                            </h2>
+                                            <div class="flex items-center gap-2">
+                                                <div class="flex-shrink-0">
+                                                    {#if endedSessions.has(message.sessionId)}
+                                                        <div
+                                                            class="w-5 h-5 bg-green-500 rounded-full"
+                                                            title="Recording completed"
+                                                        ></div>
+                                                    {:else}
+                                                        <div
+                                                            class="w-5 h-5 bg-red-500 animate-pulse rounded-full"
+                                                            title="Recording in progress"
+                                                        ></div>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {/snippet}
+                                    <div class="space-y-4 mt-4">
+                                        {#if successes[message.sessionId]}
+                                            <div
+                                                class="bg-green-50 p-4 rounded-lg border border-green-200"
+                                            >
+                                                <h3
+                                                    class="text-md font-semibold text-green-800 mb-2"
+                                                >
+                                                    Recording Details
+                                                </h3>
+                                                {#each successes[message.sessionId] as success}
+                                                    <pre
+                                                        class="text-sm text-green-900 bg-green-100 p-2 rounded">{JSON.stringify(
+                                                            success,
+                                                            null,
+                                                            2
+                                                        )}</pre>
+                                                {/each}
+                                            </div>
+                                        {/if}
+                                        {#if failures[message.sessionId]}
+                                            <div
+                                                class="bg-red-50 p-4 rounded-lg border border-red-200"
+                                            >
+                                                <h3 class="text-md font-semibold text-red-800 mb-2">
+                                                    Recording Failures
+                                                </h3>
+                                                {#each failures[message.sessionId] as failure}
+                                                    <pre
+                                                        class="text-sm text-red-900 bg-red-100 p-2 rounded">{JSON.stringify(
+                                                            failure,
+                                                            null,
+                                                            2
+                                                        )}</pre>
+                                                {/each}
+                                            </div>
+                                        {/if}
+                                        {#if uploadProgress[message.sessionId] !== undefined}
+                                            <div class="space-y-2">
+                                                <h3 class="text-md font-semibold text-gray-800">
+                                                    Upload Progress
+                                                </h3>
+                                                <Progressbar
+                                                    progress={uploadProgress[message.sessionId]}
+                                                    labelInside
+                                                    class="h-6"
+                                                    color="green"
+                                                    size="h-6"
+                                                >
+                                                    <span class="text-sm font-medium text-gray-700">
+                                                        {uploadProgress[message.sessionId]}%
+                                                    </span>
+                                                </Progressbar>
+                                            </div>
+                                        {/if}
+                                    </div>
+                                </AccordionItem>
+                            {/each}
+                        </Accordion>
+                    </div>
+                {/if}
+            </TabItem>
+        {/if}
+    </Tabs>
 </main>

@@ -8,9 +8,15 @@ export const load: PageLoad = async () => {
         const existingConfigs: DeviceRecordingAndStreamingConfig[] =
             await invoke('get_streaming_config');
         const devices: MediaDeviceInfo[] = await invoke('get_devices');
+
+        // Determine the recording mode from the configs
+        const recordingMode =
+            existingConfigs.length > 0 ? existingConfigs[0].recordingMode : 'sessionMode';
+
         return {
             streamingConfigs: existingConfigs,
             devices: devices,
+            recordingMode: recordingMode,
         };
     } catch (error) {
         console.log('No streaming config found, redirecting to register page.', error);
