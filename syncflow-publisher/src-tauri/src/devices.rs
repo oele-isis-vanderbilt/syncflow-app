@@ -284,16 +284,19 @@ pub fn initialize_streaming_config(
                 publish_options: get_best_publish_options_for_device(usb_camera)?,
                 enable_streaming: false,
                 av_mix_mode: Some(models::AvMixMode::Primary),
+                recording_mode: models::RecordingMode::SessionMode
             },
             DeviceRecordingAndStreamingConfig {
                 publish_options: get_best_publish_options_for_device(intel_microphone)?,
                 enable_streaming: false,
                 av_mix_mode: Some(models::AvMixMode::Mic1),
+                recording_mode: models::RecordingMode::SessionMode
             },
             DeviceRecordingAndStreamingConfig {
                 publish_options: get_best_publish_options_for_device(screen)?,
                 enable_streaming: false,
                 av_mix_mode: None,
+                recording_mode: models::RecordingMode::SessionMode
             },
         ];
 
@@ -303,6 +306,7 @@ pub fn initialize_streaming_config(
                     publish_options: opts,
                     enable_streaming: true,
                     av_mix_mode: None,
+                    recording_mode: models::RecordingMode::SessionMode
                 });
             }
         }
