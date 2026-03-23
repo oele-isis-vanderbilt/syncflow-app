@@ -11,15 +11,21 @@ export const load: PageLoad = async () => {
     } catch (error) {
         console.log('No streaming config found');
     }
+
+    let devices: MediaDeviceInfo[] = [];
+
     try {
         const registration: RegistrationResponse = await invoke('get_registration');
-        const devices: MediaDeviceInfo[] = await invoke('get_devices');
+        devices = await invoke('get_devices');
         return {
             registration,
             devices,
         };
     } catch (error) {
         console.log('No registration found, redirecting to register page.', error);
-        redirect(302, '/register');
+        return {
+            registration: null,
+            devices,
+        };
     }
 };

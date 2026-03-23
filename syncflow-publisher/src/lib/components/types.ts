@@ -92,9 +92,12 @@ export interface DeviceRecordingAndStreamingConfig {
     enableStreaming: boolean;
     publishOptions: PublishOptions;
     avMixMode?: AvMixMode;
+    recordingMode: RecordingMode;
 }
 
 export type AvMixMode = 'primary' | 'mic1' | 'mic2';
+
+export type RecordingMode = 'sessionMode' | 'localMode';
 
 export interface NewSessionMessage {
     sessionId: string;

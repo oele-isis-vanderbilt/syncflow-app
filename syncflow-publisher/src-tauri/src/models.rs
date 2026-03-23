@@ -17,6 +17,14 @@ pub struct DeviceRecordingAndStreamingConfig {
     pub publish_options: PublishOptions,
     pub enable_streaming: bool,
     pub av_mix_mode: Option<AvMixMode>,
+    pub recording_mode: RecordingMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordingMode {
+    SessionMode, // Listen for remote sessions
+    LocalMode,   // Manual local recording
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -71,4 +79,5 @@ pub struct AppState {
     pub session_listener: Arc<AsyncMutex<Option<SessionListener>>>,
     pub active_sessions: Arc<AsyncMutex<HashMap<String, ActiveSession>>>,
     pub currently_joined_session: Arc<AsyncMutex<Option<String>>>,
+    pub local_recording_session: Arc<AsyncMutex<Option<ActiveSession>>>,
 }
