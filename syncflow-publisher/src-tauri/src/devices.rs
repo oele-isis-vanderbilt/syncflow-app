@@ -2,10 +2,15 @@ use std::path::PathBuf;
 use std::vec;
 
 use livekit_gstreamer::get_devices_info;
+use livekit_gstreamer::AudioCapability;
+use livekit_gstreamer::AudioPublishOptions;
 use livekit_gstreamer::GstMediaDevice;
 use livekit_gstreamer::MediaCapability;
 use livekit_gstreamer::MediaDeviceInfo;
 use livekit_gstreamer::PublishOptions;
+use livekit_gstreamer::ScreenPublishOptions;
+use livekit_gstreamer::VideoCapability;
+use livekit_gstreamer::VideoPublishOptions;
 
 use crate::errors::SyncFlowPublisherError;
 use crate::models;
@@ -152,9 +157,150 @@ pub async fn set_streaming_config(
     Ok(configs)
 }
 
+pub fn get_best_publish_options_for_device(device: &MediaDeviceInfo) -> Option<PublishOptions> {
+    match device.device_class.as_str() {
+        "Video/Source" => {
+            let mut best: Option<&VideoCapability> = None;
+            for cap in device.capabilities.iter().filter_map(|c| match c {
+                MediaCapability::Video(v) => Some(v),
+                _ => None,
+            }) {
+                best = Some(match best {
+                    None => cap,
+                    Some(b) => {
+                        let cap_fps = cap.framerates.iter().max().copied().unwrap_or(0);
+                        let b_fps = b.framerates.iter().max().copied().unwrap_or(0);
+                        if cap.width * cap.height > b.width * b.height
+                            || (cap.width * cap.height == b.width * b.height && cap_fps > b_fps)
+                        {
+                            cap
+                        } else {
+                            b
+                        }
+                    }
+                });
+            }
+            let cap = best?;
+            let framerate = *cap.framerates.iter().max()?;
+            Some(PublishOptions::Video(VideoPublishOptions {
+                codec: cap.codec.clone(),
+                width: cap.width,
+                height: cap.height,
+                framerate,
+                device_id: device.device_path.clone(),
+                local_file_save_options: None,
+            }))
+        }
+
+        "Audio/Source" => {
+            let mut best: Option<&AudioCapability> = None;
+            for cap in device.capabilities.iter().filter_map(|c| match c {
+                MediaCapability::Audio(a) => Some(a),
+                _ => None,
+            }) {
+                best = Some(match best {
+                    None => cap,
+                    Some(b) => {
+                        // Prefer higher sample rate, then more channels
+                        if cap.framerates.1 > b.framerates.1
+                            || (cap.framerates.1 == b.framerates.1 && cap.channels > b.channels)
+                        {
+                            cap
+                        } else {
+                            b
+                        }
+                    }
+                });
+            }
+            let cap = best?;
+            Some(PublishOptions::Audio(AudioPublishOptions {
+                codec: cap.codec.clone(),
+                channels: cap.channels,
+                framerate: cap.framerates.1, // max sample rate
+                device_id: device.device_path.clone(),
+                selected_channel: None,
+                local_file_save_options: None,
+            }))
+        }
+
+        "Screen/Source" => {
+            let cap = device.capabilities.iter().find_map(|c| match c {
+                MediaCapability::Screen(s) => Some(s),
+                _ => None,
+            })?;
+            // Cap at 30fps for screen
+            let framerate = cap
+                .framerates
+                .iter()
+                .filter(|&&f| f <= 30)
+                .max()
+                .copied()
+                .unwrap_or(30);
+            Some(PublishOptions::Screen(ScreenPublishOptions {
+                codec: cap.codec.clone(),
+                width: cap.width,
+                height: cap.height,
+                framerate,
+                screen_id_or_name: device.device_path.clone(),
+                local_file_save_options: None,
+            }))
+        }
+
+        _ => None,
+    }
+}
+
 pub fn initialize_streaming_config(
     app_dir: &PathBuf,
 ) -> Option<Vec<DeviceRecordingAndStreamingConfig>> {
+    if (cfg!(target_os = "windows")) {
+        let devices = get_devices();
+        let usb_camera = devices
+            .iter()
+            .find(|d| d.display_name.contains("USB Camera"))?;
+        let intel_microphone = devices.iter().find(|d| d.display_name.contains("Intel"))?;
+        let usb_mics = devices
+            .iter()
+            .filter(|d| d.display_name.contains("USB PnP"))
+            .collect::<Vec<_>>();
+
+        if usb_mics.len() != 2 {
+            return None;
+        }
+
+        let screen = devices.iter().find(|d| d.device_class == "Screen/Source")?;
+
+        let mut configs = vec![
+            DeviceRecordingAndStreamingConfig {
+                publish_options: get_best_publish_options_for_device(usb_camera)?,
+                enable_streaming: false,
+                av_mix_mode: Some(models::AvMixMode::Primary),
+            },
+            DeviceRecordingAndStreamingConfig {
+                publish_options: get_best_publish_options_for_device(intel_microphone)?,
+                enable_streaming: false,
+                av_mix_mode: Some(models::AvMixMode::Mic1),
+            },
+            DeviceRecordingAndStreamingConfig {
+                publish_options: get_best_publish_options_for_device(screen)?,
+                enable_streaming: false,
+                av_mix_mode: None,
+            },
+        ];
+
+        for mic in usb_mics {
+            if let Some(opts) = get_best_publish_options_for_device(mic) {
+                configs.push(DeviceRecordingAndStreamingConfig {
+                    publish_options: opts,
+                    enable_streaming: true,
+                    av_mix_mode: None,
+                });
+            }
+        }
+
+        return Some(configs);
+    }
+
     let config_file = app_dir.join("selected_devices.json");
     if config_file.exists() {
         let config_str = std::fs::read_to_string(&config_file).ok()?;
