@@ -72,11 +72,19 @@
             Welcome to <span class="text-blue-600">SyncFlow Publisher</span>! {registrationDetails?.deviceName &&
                 `(${registrationDetails.deviceName})`}
         </h1>
-        <Button
-            color="red"
-            class="ml-4 shadow hover:scale-105 transition-transform"
-            onclick={deregister}>Delete Registration</Button
-        >
+        {#if registrationDetails}
+            <Button
+                color="red"
+                class="ml-4 shadow hover:scale-105 transition-transform"
+                onclick={deregister}>Delete Registration</Button
+            >
+        {:else}
+            <Button
+                color="green"
+                class="ml-4 shadow hover:scale-105 transition-transform"
+                onclick={() => goto('/register')}>Register Your Device</Button
+            >
+        {/if}
     </div>
     {#if registrationDetails}
         <RegistrationDetails {registrationDetails} />
@@ -94,7 +102,7 @@
                     d="M12 8v4l3 3m6 0a9 9 0 11-18 0 9 9 0 0118 0z"
                 /></svg
             >
-            <p class="text-lg text-gray-500">No registration details found.</p>
+            <p class="text-lg text-gray-500">No registration details found. (Offline Mode)</p>
         </div>
     {/if}
 
