@@ -230,6 +230,12 @@
         >
             Register
         </Button>
+        <Button
+            onclick={() => goto('/')}
+            class="bg-gradient-to-r from-green-500 to-yello-500 text-white font-bold py-2 px-4 rounded-lg shadow hover:scale-105 transition-transform duration-150"
+        >
+            Go Home
+        </Button>
     </form>
     <footer class="text-center text-xs text-gray-400 mt-12">
         &copy; {new Date().getFullYear()} OELE, ISIS Vanderbilt. All rights reserved.

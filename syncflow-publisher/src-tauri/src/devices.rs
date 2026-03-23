@@ -144,14 +144,23 @@ pub async fn set_streaming_config(
         *guard = Some(configs.clone());
     }
 
-    let mut session_listener_guard = app_state.session_listener.lock().await;
-    if session_listener_guard.is_none() {
-        let listener = initialize_session_listener(&app_state.app_dir, app_handle.clone())
-            .await
-            .ok_or(SyncFlowPublisherError::InitializationError(
-                "Failed to initialize session listener".to_string(),
-            ))?;
-        *session_listener_guard = Some(listener);
+    // Only initialize session listener for session mode
+    let is_session_mode = configs.iter().any(|config| {
+        matches!(
+            config.recording_mode,
+            crate::models::RecordingMode::SessionMode
+        )
+    });
+    if is_session_mode {
+        let mut session_listener_guard = app_state.session_listener.lock().await;
+        if session_listener_guard.is_none() {
+            let listener = initialize_session_listener(&app_state.app_dir, app_handle.clone())
+                .await
+                .ok_or(SyncFlowPublisherError::InitializationError(
+                    "Failed to initialize session listener".to_string(),
+                ))?;
+            *session_listener_guard = Some(listener);
+        }
     }
 
     Ok(configs)

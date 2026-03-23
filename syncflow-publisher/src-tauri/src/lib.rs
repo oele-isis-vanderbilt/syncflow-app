@@ -14,6 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use livekit_gstreamer::utils::system_time_nanos;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
@@ -29,7 +30,8 @@ use crate::{
     register::{get_credentials, get_device_details, RegistrationResponse},
     session_listener::ClonableNewSessionMessage,
     syncflow_publisher::{
-        record_publish_to_syncflow, record_publish_to_syncflow_with_cancellation,
+        local_recording_only, record_publish_to_syncflow,
+        record_publish_to_syncflow_with_cancellation,
     },
     utils::load_json,
 };
@@ -271,6 +273,117 @@ async fn get_currently_joined_session(
     Ok(currently_joined.clone())
 }
 
+#[tauri::command]
+async fn start_local_recording(
+    session_name: String,
+    app_state: tauri::State<'_, models::AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), SyncFlowPublisherError> {
+    // Get required data from app state
+    let configs = {
+        let config_guard = app_state.recording_and_streaming_config.lock().unwrap();
+        config_guard.clone()
+    };
+
+    let configs = configs.ok_or_else(|| {
+        SyncFlowPublisherError::NotIntialized("Recording config not found".to_string())
+    })?;
+
+    // Check if already recording
+    let mut local_recording_guard = app_state.local_recording_session.lock().await;
+    if local_recording_guard.is_some() {
+        return Err(SyncFlowPublisherError::NotIntialized(
+            "Local recording already in progress".to_string(),
+        ));
+    }
+
+    // Load S3 config if available
+    let s3_config_file = app_state.app_dir.join("s3_credentials.json");
+    let (s3_client, bucket_name): (Option<rusoto_s3::S3Client>, Option<String>) =
+        if s3_config_file.exists() {
+            match load_json::<S3Config>(&s3_config_file) {
+                Ok(config) => {
+                    let bucket_name = config.s3_bucket.clone();
+                    let s3_client = rusoto_s3::S3Client::from(config);
+                    (Some(s3_client), Some(bucket_name))
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+    let recordings_dir = app_state.app_dir.join("recordings");
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+    let session_name_clone = session_name.clone();
+    let session_id = format!("local-{}", system_time_nanos());
+
+    let task = tauri::async_runtime::spawn(async move {
+        local_recording_only(
+            session_name_clone,
+            configs,
+            app_handle,
+            &recordings_dir,
+            s3_client,
+            bucket_name,
+            cancel_token_clone,
+        )
+        .await;
+    });
+
+    let active_session = ActiveSession {
+        session_id: session_id.clone(),
+        session_name: session_name,
+        cancel_token,
+        task_handle: task,
+    };
+
+    *local_recording_guard = Some(active_session);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_local_recording(
+    app_state: tauri::State<'_, models::AppState>,
+) -> Result<(), SyncFlowPublisherError> {
+    let mut local_recording_guard = app_state.local_recording_session.lock().await;
+
+    if let Some(session) = local_recording_guard.take() {
+        session.cancel_token.cancel();
+        println!("Stopped local recording session: {}", session.session_id);
+        Ok(())
+    } else {
+        Err(SyncFlowPublisherError::NotIntialized(
+            "No local recording session to stop".to_string(),
+        ))
+    }
+}
+
+#[tauri::command]
+fn set_recording_mode(
+    recording_mode: models::RecordingMode,
+    app_state: tauri::State<'_, models::AppState>,
+) -> Result<(), SyncFlowPublisherError> {
+    let recording_mode_file = app_state.app_dir.join("recording_mode.json");
+    utils::save_json(&recording_mode, &recording_mode_file)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_recording_mode(
+    app_state: tauri::State<'_, models::AppState>,
+) -> Result<models::RecordingMode, SyncFlowPublisherError> {
+    let recording_mode_file = app_state.app_dir.join("recording_mode.json");
+    if recording_mode_file.exists() {
+        utils::load_json(&recording_mode_file)
+    } else {
+        // Default to session mode if no preference is stored
+        Ok(models::RecordingMode::SessionMode)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -470,6 +583,7 @@ pub fn run() {
                     session_listener: Arc::new(AsyncMutex::new(session_listener)),
                     active_sessions: Arc::new(AsyncMutex::new(initial_active_sessions)),
                     currently_joined_session: Arc::new(AsyncMutex::new(None)),
+                    local_recording_session: Arc::new(AsyncMutex::new(None)),
                 };
                 app.manage(app_state);
             });
@@ -490,6 +604,10 @@ pub fn run() {
             get_active_sessions,
             get_all_sessions,
             get_currently_joined_session,
+            start_local_recording,
+            stop_local_recording,
+            set_recording_mode,
+            get_recording_mode,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

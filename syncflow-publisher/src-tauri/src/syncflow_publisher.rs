@@ -1,3 +1,4 @@
+use gstreamer::prelude::*;
 use std::{path::PathBuf, sync::Arc, vec};
 use tokio_util::sync::CancellationToken;
 
@@ -189,6 +190,7 @@ pub async fn record_publish_to_syncflow_with_cancellation(
 
     // Create individual streams for remaining devices (those without avmix roles)
     let remaining_configs = configs
+        .clone()
         .into_iter()
         .filter(|config| config.av_mix_mode.is_none())
         .map(|config| {
@@ -425,4 +427,330 @@ pub async fn record_publish_to_syncflow_with_cancellation(
             );
         }
     }
+}
+
+async fn handle_local_streams(
+    configs: &mut [StreamingHandlingConfig],
+) -> Result<(), SyncFlowPublisherError> {
+    // Build pipelines for all streams
+    for config in configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                gst_stream.build_pipeline().await?;
+            }
+            MediaStream::AvMix(av_stream) => {
+                av_stream.build_pipeline().await?;
+            }
+        }
+    }
+
+    // Preroll all streams
+    for config in configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                gst_stream.preroll_pipeline().await?;
+            }
+            MediaStream::AvMix(av_stream) => {
+                av_stream.preroll_pipeline().await?;
+            }
+        }
+    }
+
+    // Set clock for all streams
+    let master_clock = gstreamer::SystemClock::obtain();
+    let base_time = master_clock.time();
+
+    for config in configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                gst_stream.set_pipeline_clock(&master_clock, base_time)?;
+            }
+            MediaStream::AvMix(av_stream) => {
+                av_stream.set_pipeline_clock(&master_clock, base_time)?;
+            }
+        }
+    }
+
+    // Start all streams
+    for config in configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                gst_stream.play_pipeline()?;
+            }
+            MediaStream::AvMix(av_stream) => {
+                av_stream.play_pipeline()?;
+            }
+        }
+    }
+
+    // Run bus loops
+    for config in configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                gst_stream.run_bus_loop().await?;
+            }
+            MediaStream::AvMix(av_stream) => {
+                av_stream.run_bus_loop().await?;
+            }
+        }
+    }
+
+    // Note: We skip the publication step for local recording
+
+    Ok(())
+}
+
+pub async fn local_recording_only(
+    session_name: String,
+    configs: Vec<DeviceRecordingAndStreamingConfig>,
+    event_emitter: tauri::AppHandle,
+    out_dir: &PathBuf,
+    s3_client: Option<rusoto_s3::S3Client>,
+    bucket_name: Option<String>,
+    cancel_token: CancellationToken,
+) {
+    let session_id = format!("local-{}", system_time_nanos());
+    let participant_name = "local-recorder";
+
+    let output_dir = out_dir.join(format!(
+        "{}-{}-{}",
+        session_id,
+        session_name.replace(" ", "-"),
+        participant_name
+    ));
+
+    // Create output directory
+    if let Err(e) = std::fs::create_dir_all(&output_dir) {
+        let _ = event_emitter.emit(
+            "publication-notification",
+            PublicationNotification::Failure(FailureData {
+                session_id: session_id.clone(),
+                reason: format!("Failed to create output directory: {}", e),
+            }),
+        );
+        return;
+    }
+
+    // Check if we have AV mix configuration
+    let has_av_mix = configs.iter().any(|c| c.av_mix_mode.is_some());
+
+    let mut streaming_configs: Vec<StreamingHandlingConfig> = Vec::new();
+
+    if has_av_mix {
+        // Create AV mix stream configuration from devices with avmix roles
+        let video_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Primary))
+            .expect("AV mix mode requires a primary video source");
+
+        let mic1_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Mic1))
+            .expect("AV mix mode requires a primary audio source");
+
+        let mic2_config = configs
+            .iter()
+            .find(|c| c.av_mix_mode == Some(AvMixMode::Mic2));
+
+        // Extract the publish options and add local file save
+        let mut video_opts = match &video_config.publish_options {
+            PublishOptions::Video(opts) => opts.clone(),
+            _ => panic!("Primary AV mix source must be video"),
+        };
+
+        let mut mic1_opts = match &mic1_config.publish_options {
+            PublishOptions::Audio(opts) => opts.clone(),
+            _ => panic!("Mic1 AV mix source must be audio"),
+        };
+
+        let mut mic2_opts = if let Some(mic2_config) = mic2_config {
+            match &mic2_config.publish_options {
+                PublishOptions::Audio(opts) => Some(opts.clone()),
+                _ => panic!("Mic2 AV mix source must be audio"),
+            }
+        } else {
+            None
+        };
+
+        // Add local file save options
+        let local_file_save_options = Some(LocalFileSaveOptions {
+            output_dir: output_dir.to_string_lossy().to_string(),
+        });
+
+        video_opts.local_file_save_options = local_file_save_options.clone();
+        mic1_opts.local_file_save_options = local_file_save_options.clone();
+        if let Some(ref mut mic2) = mic2_opts.as_mut() {
+            mic2.local_file_save_options = local_file_save_options;
+        }
+
+        let av_stream = AvMixStream::new(video_opts, mic1_opts, mic2_opts);
+
+        streaming_configs.push(StreamingHandlingConfig {
+            media_stream: MediaStream::AvMix(av_stream),
+            publish_to_livekit: false, // Always false for local recording
+        });
+    }
+
+    // Create individual streams for remaining devices (those without avmix roles)
+    let remaining_configs = configs
+        .clone()
+        .into_iter()
+        .filter(|config| config.av_mix_mode.is_none())
+        .map(|config| {
+            let mut cloned_publish_options = config.publish_options.clone();
+
+            let local_file_save_options = Some(LocalFileSaveOptions {
+                output_dir: output_dir.to_string_lossy().to_string(),
+            });
+
+            match &mut cloned_publish_options {
+                PublishOptions::Video(video_publish_options) => {
+                    video_publish_options.local_file_save_options = local_file_save_options;
+                }
+                PublishOptions::Audio(audio_publish_options) => {
+                    audio_publish_options.local_file_save_options = local_file_save_options;
+                }
+                PublishOptions::Screen(screen_publish_options) => {
+                    screen_publish_options.local_file_save_options = local_file_save_options;
+                }
+            }
+
+            let stream = GstMediaStream::new(cloned_publish_options);
+
+            StreamingHandlingConfig {
+                media_stream: MediaStream::Individual(stream),
+                publish_to_livekit: false, // Always false for local recording
+            }
+        })
+        .collect::<Vec<_>>();
+
+    streaming_configs.extend(remaining_configs);
+
+    if streaming_configs.is_empty() {
+        let _ = event_emitter.emit(
+            "publication-notification",
+            PublicationNotification::Failure(FailureData {
+                session_id: session_id.clone(),
+                reason: "No streaming configs could be created".to_string(),
+            }),
+        );
+        return;
+    }
+
+    // Handle streams using the same pattern as lk_participant::handle_streams
+    let result = handle_local_streams(&mut streaming_configs).await;
+
+    if let Err(e) = result {
+        let _ = event_emitter.emit(
+            "publication-notification",
+            PublicationNotification::Failure(FailureData {
+                session_id: session_id.clone(),
+                reason: e.to_string(),
+            }),
+        );
+        return;
+    }
+
+    // Emit recording started notification
+    let _ = event_emitter.emit(
+        "publication-notification",
+        PublicationNotification::StreamingSuccess(StreamingSuccessData {
+            session_id: session_id.clone(),
+            session_name: session_name.clone(),
+            started_at: system_time_nanos().to_string(),
+            devices: streaming_configs
+                .iter()
+                .filter_map(|config| match &config.media_stream {
+                    MediaStream::Individual(gst_stream) => gst_stream.get_device_name(),
+                    MediaStream::AvMix(_) => Some("AV Mix Stream".to_string()),
+                })
+                .collect(),
+        }),
+    );
+
+    // Wait for cancellation
+    cancel_token.cancelled().await;
+
+    // Stop all streams
+    for config in streaming_configs.iter_mut() {
+        match &mut config.media_stream {
+            MediaStream::Individual(gst_stream) => {
+                let _ = gst_stream.stop().await;
+            }
+            MediaStream::AvMix(av_stream) => {
+                let _ = av_stream.stop().await;
+            }
+        }
+    }
+
+    // Handle S3 upload if enabled
+    if let (Some(s3_client), Some(bucket_name)) = (s3_client, bucket_name) {
+        let upload_configs: Vec<_> = configs
+            .iter()
+            .filter(|config| config.enable_streaming)
+            .collect();
+
+        if !upload_configs.is_empty() {
+            let (tx, mut rx) = channel::<f32>(100);
+
+            let s3_client_clone = s3_client.clone();
+            let bucket_name_clone = bucket_name.clone();
+            let output_dir_clone = output_dir.clone();
+            let session_id_clone = session_id.clone();
+            let failure_emitter = event_emitter.clone();
+
+            tauri::async_runtime::spawn(async move {
+                let key = format!(
+                    "recordings/{}-{}-{}.zip",
+                    session_id_clone,
+                    session_name.replace(" ", "-"),
+                    participant_name
+                );
+
+                println!("Starting upload to S3 with key: {}", key);
+
+                let result = upload_to_s3(
+                    &output_dir_clone,
+                    &bucket_name_clone,
+                    &key,
+                    &s3_client_clone,
+                    Some(tx),
+                )
+                .await;
+
+                println!("Upload to S3 completed.");
+                println!("Upload result: {:?}", result);
+
+                if let Err(e) = result {
+                    let _ = failure_emitter.emit(
+                        "publication-notification",
+                        PublicationNotification::Failure(FailureData {
+                            session_id: session_id_clone,
+                            reason: e.to_string(),
+                        }),
+                    );
+                }
+            });
+
+            let progress_emitter = event_emitter.clone();
+
+            while let Some(progress) = rx.recv().await {
+                let _ = progress_emitter.emit(
+                    "publication-notification",
+                    PublicationNotification::UploadProgress(UploadProgressData {
+                        progress,
+                        session_id: session_id.clone(),
+                    }),
+                );
+            }
+        }
+    }
+
+    // Emit session ended notification
+    let _ = event_emitter.emit(
+        "publication-notification",
+        PublicationNotification::SessionEnded(SessionEndedData {
+            session_id: session_id.clone(),
+        }),
+    );
 }

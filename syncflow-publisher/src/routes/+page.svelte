@@ -2,13 +2,13 @@
     import { goto } from '$app/navigation';
     import { error } from '@sveltejs/kit';
     import { invoke } from '@tauri-apps/api/core';
-    import { Button } from 'flowbite-svelte';
+    import { Button, Radio } from 'flowbite-svelte';
     import type { PageProps } from './$types';
     import RegistrationDetails from '$lib/components/RegistrationDetails.svelte';
     import Devices from '$lib/components/Devices.svelte';
     import { devicesStore } from '$lib/store.svelte';
     import SelectedDevices from '$lib/components/SelectedDevices.svelte';
-    import type { DeviceRecordingAndStreamingConfig } from '$lib/components/types';
+    import type { DeviceRecordingAndStreamingConfig, RecordingMode } from '$lib/components/types';
 
     let { data }: PageProps = $props();
 
@@ -43,6 +43,25 @@
     }
 
     let errorMessage = $state<string | null>(null);
+    let recordingMode = $state<RecordingMode>('sessionMode');
+
+    // Load saved recording mode on page initialization
+    invoke<RecordingMode>('get_recording_mode')
+        .then((savedMode) => {
+            recordingMode = savedMode;
+        })
+        .catch((error) => {
+            console.warn('Failed to load saved recording mode:', error);
+            // Default to sessionMode if loading fails
+            recordingMode = 'sessionMode';
+        });
+
+    // Save recording mode whenever it changes
+    $effect(() => {
+        invoke('set_recording_mode', { recordingMode }).catch((error) => {
+            console.error('Failed to save recording mode:', error);
+        });
+    });
 </script>
 
 <main
@@ -53,11 +72,19 @@
             Welcome to <span class="text-blue-600">SyncFlow Publisher</span>! {registrationDetails?.deviceName &&
                 `(${registrationDetails.deviceName})`}
         </h1>
-        <Button
-            color="red"
-            class="ml-4 shadow hover:scale-105 transition-transform"
-            onclick={deregister}>Delete Registration</Button
-        >
+        {#if registrationDetails}
+            <Button
+                color="red"
+                class="ml-4 shadow hover:scale-105 transition-transform"
+                onclick={deregister}>Delete Registration</Button
+            >
+        {:else}
+            <Button
+                color="green"
+                class="ml-4 shadow hover:scale-105 transition-transform"
+                onclick={() => goto('/register')}>Register Your Device</Button
+            >
+        {/if}
     </div>
     {#if registrationDetails}
         <RegistrationDetails {registrationDetails} />
@@ -75,9 +102,32 @@
                     d="M12 8v4l3 3m6 0a9 9 0 11-18 0 9 9 0 0118 0z"
                 /></svg
             >
-            <p class="text-lg text-gray-500">No registration details found.</p>
+            <p class="text-lg text-gray-500">No registration details found. (Offline Mode)</p>
         </div>
     {/if}
+
+    <!-- Recording Mode Selection -->
+    <div class="bg-white rounded-xl shadow-lg px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3">Recording Mode</h2>
+        <div class="flex gap-6">
+            <Radio bind:group={recordingMode} value="sessionMode" class="text-blue-600">
+                <span class="ml-2">
+                    <strong>Session Mode</strong> - Listen for remote sessions and auto-join
+                    <p class="text-sm text-gray-600 mt-1">
+                        Requires internet connection and registration
+                    </p>
+                </span>
+            </Radio>
+            <Radio bind:group={recordingMode} value="localMode" class="text-purple-600">
+                <span class="ml-2">
+                    <strong>Local Recording Mode</strong> - Manual recording with local controls
+                    <p class="text-sm text-gray-600 mt-1">
+                        Works offline, manual session management
+                    </p>
+                </span>
+            </Radio>
+        </div>
+    </div>
     <div class="flex items-center justify-between flex-col md:flex-row w-full h-full">
         <div class="p-5 flex-1">
             <Devices
@@ -130,6 +180,7 @@
                             enableStreaming: streamingConfigs[deviceId],
                             publishOptions: option,
                             avMixMode: avMixMode ? avMixRoles[deviceId] : undefined,
+                            recordingMode: recordingMode,
                         };
                     });
 
@@ -145,8 +196,10 @@
             }}
         >
             {getSelectedDevicesFn()().length > 0
-                ? 'Start Publishing'
-                : 'Please select at least one device to publish'}
+                ? recordingMode === 'sessionMode'
+                    ? 'Start Session Listener'
+                    : 'Setup Local Recording'
+                : 'Please select at least one device'}
         </Button>
     </div>
 </main>

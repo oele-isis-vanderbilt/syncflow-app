@@ -5955,6 +5955,7 @@ dependencies = [
  "client 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=216-session-notifier-modification)",
  "dirs",
  "gethostname",
+ "gstreamer",
  "livekit",
  "livekit-gstreamer",
  "local-ip-address",
