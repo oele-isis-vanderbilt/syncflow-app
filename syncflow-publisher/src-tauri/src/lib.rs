@@ -362,12 +362,44 @@ async fn stop_local_recording(
 }
 
 #[tauri::command]
-fn set_recording_mode(
+async fn set_recording_mode(
     recording_mode: models::RecordingMode,
     app_state: tauri::State<'_, models::AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), SyncFlowPublisherError> {
     let recording_mode_file = app_state.app_dir.join("recording_mode.json");
     utils::save_json(&recording_mode, &recording_mode_file)?;
+
+    // Handle session listener based on recording mode
+    let mut session_listener_guard = app_state.session_listener.lock().await;
+
+    match recording_mode {
+        models::RecordingMode::SessionMode => {
+            // Start session listener if not already running
+            if session_listener_guard.is_none() {
+                if let Some(listener) =
+                    session_listener::initialize_session_listener(&app_state.app_dir, app_handle)
+                        .await
+                {
+                    *session_listener_guard = Some(listener);
+                    println!("Session listener started for session mode");
+                } else {
+                    eprintln!("Failed to initialize session listener");
+                }
+            }
+        }
+        models::RecordingMode::LocalMode => {
+            // Stop session listener to avoid conflicts
+            if let Some(ref mut listener) = *session_listener_guard {
+                println!("Stopping session listener for local recording mode...");
+                if let Err(e) = listener.stop().await {
+                    eprintln!("Error stopping session listener: {}", e);
+                }
+            }
+            *session_listener_guard = None;
+        }
+    }
+
     Ok(())
 }
 
@@ -537,30 +569,45 @@ pub fn run() {
                     Vec::new()
                 };
 
-                let session_listener = if let (Some(reg_details), Some(credentials)) =
-                    (device_registration_details.as_ref(), credentials)
-                {
-                    let mut listener = SessionListener::new(
-                        &credentials.rabbitmq_host,
-                        credentials.rabbitmq_port,
-                        &credentials.rabbitmq_username,
-                        &credentials.rabbitmq_password,
-                        &credentials.rabbitmq_vhost,
-                        &reg_details
-                            .session_notification_exchange_name
-                            .clone()
-                            .unwrap(),
-                        &reg_details
-                            .session_notification_binding_key
-                            .clone()
-                            .unwrap(),
-                    );
-                    let _ = listener.start().await;
-                    let _ = listener.start_frontend_notifications(app_handle).await;
-                    Some(listener)
+                // Check recording mode preference to determine if session listener should start
+                let recording_mode_file = app_dir.join("recording_mode.json");
+                let recording_mode = if recording_mode_file.exists() {
+                    utils::load_json::<models::RecordingMode>(&recording_mode_file)
+                        .unwrap_or(models::RecordingMode::SessionMode)
                 } else {
-                    None
+                    models::RecordingMode::SessionMode
                 };
+
+                let session_listener =
+                    if matches!(recording_mode, models::RecordingMode::SessionMode) {
+                        if let (Some(reg_details), Some(credentials)) =
+                            (device_registration_details.as_ref(), credentials)
+                        {
+                            let mut listener = SessionListener::new(
+                                &credentials.rabbitmq_host,
+                                credentials.rabbitmq_port,
+                                &credentials.rabbitmq_username,
+                                &credentials.rabbitmq_password,
+                                &credentials.rabbitmq_vhost,
+                                &reg_details
+                                    .session_notification_exchange_name
+                                    .clone()
+                                    .unwrap(),
+                                &reg_details
+                                    .session_notification_binding_key
+                                    .clone()
+                                    .unwrap(),
+                            );
+                            let _ = listener.start().await;
+                            let _ = listener.start_frontend_notifications(app_handle).await;
+                            Some(listener)
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Don't start session listener in local recording mode
+                        None
+                    };
                 // Create initial active sessions HashMap from startup sessions
                 let mut initial_active_sessions = HashMap::new();
                 for session in startup_active_sessions {
