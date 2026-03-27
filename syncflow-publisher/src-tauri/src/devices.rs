@@ -17,6 +17,15 @@ use crate::models;
 use crate::models::DeviceRecordingAndStreamingConfig;
 use crate::session_listener::initialize_session_listener;
 use crate::utils::save_json;
+use serde::{Deserialize, Serialize};
+
+// Add this struct (e.g., in models.rs or at the top of this file)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SciStoryDevices {
+    pub camera_name: String,
+    pub primary_microphone_name: String,
+    pub usb_microphone_names: Vec<String>, // partial match used to find both USB mics
+}
 
 fn verify_device_exists_and_supports_codec(
     option: &PublishOptions,
@@ -262,56 +271,73 @@ pub fn get_best_publish_options_for_device(device: &MediaDeviceInfo) -> Option<P
 pub fn initialize_streaming_config(
     app_dir: &PathBuf,
 ) -> Option<Vec<DeviceRecordingAndStreamingConfig>> {
-    if (cfg!(target_os = "windows")) {
-        let devices = get_devices();
-        let usb_camera = devices
-            .iter()
-            .find(|d| d.display_name.contains("USB Camera"))?;
-        let intel_microphone = devices.iter().find(|d| d.display_name.contains("Intel"))?;
-        let usb_mics = devices
-            .iter()
-            .filter(|d| d.display_name.contains("USB PnP"))
-            .collect::<Vec<_>>();
+    #[cfg(target_os = "windows")]
+    {
+        let sci_story_devices_file = app_dir.join("scistory_devices.json");
+        if sci_story_devices_file.exists() {
+            let sci_story_devices: SciStoryDevices =
+                serde_json::from_str(&std::fs::read_to_string(&sci_story_devices_file).ok()?)
+                    .ok()?;
 
-        if usb_mics.len() != 2 {
-            return None;
-        }
+            let devices = get_devices();
 
-        let screen = devices.iter().find(|d| d.device_class == "Screen/Source")?;
+            let usb_camera = devices
+                .iter()
+                .find(|d| d.display_name.contains(&sci_story_devices.camera_name))?;
+            let primary_microphone = devices.iter().find(|d| {
+                d.display_name
+                    .contains(&sci_story_devices.primary_microphone_name)
+            })?;
+            let usb_mics = devices
+                .iter()
+                .filter(|d| {
+                    sci_story_devices
+                        .usb_microphone_names
+                        .iter()
+                        .any(|name| d.display_name.contains(name))
+                })
+                .collect::<Vec<_>>();
 
-        let mut configs = vec![
-            DeviceRecordingAndStreamingConfig {
-                publish_options: get_best_publish_options_for_device(usb_camera)?,
-                enable_streaming: false,
-                av_mix_mode: Some(models::AvMixMode::Primary),
-                recording_mode: models::RecordingMode::SessionMode
-            },
-            DeviceRecordingAndStreamingConfig {
-                publish_options: get_best_publish_options_for_device(intel_microphone)?,
-                enable_streaming: false,
-                av_mix_mode: Some(models::AvMixMode::Mic1),
-                recording_mode: models::RecordingMode::SessionMode
-            },
-            DeviceRecordingAndStreamingConfig {
-                publish_options: get_best_publish_options_for_device(screen)?,
-                enable_streaming: false,
-                av_mix_mode: None,
-                recording_mode: models::RecordingMode::SessionMode
-            },
-        ];
-
-        for mic in usb_mics {
-            if let Some(opts) = get_best_publish_options_for_device(mic) {
-                configs.push(DeviceRecordingAndStreamingConfig {
-                    publish_options: opts,
-                    enable_streaming: true,
-                    av_mix_mode: None,
-                    recording_mode: models::RecordingMode::SessionMode
-                });
+            if usb_mics.len() != 2 {
+                return None;
             }
-        }
 
-        return Some(configs);
+            let screen = devices.iter().find(|d| d.device_class == "Screen/Source")?;
+
+            let mut configs = vec![
+                DeviceRecordingAndStreamingConfig {
+                    publish_options: get_best_publish_options_for_device(usb_camera)?,
+                    enable_streaming: false,
+                    av_mix_mode: Some(models::AvMixMode::Primary),
+                    recording_mode: models::RecordingMode::LocalMode,
+                },
+                DeviceRecordingAndStreamingConfig {
+                    publish_options: get_best_publish_options_for_device(primary_microphone)?,
+                    enable_streaming: false,
+                    av_mix_mode: Some(models::AvMixMode::Mic1),
+                    recording_mode: models::RecordingMode::LocalMode,
+                },
+                DeviceRecordingAndStreamingConfig {
+                    publish_options: get_best_publish_options_for_device(screen)?,
+                    enable_streaming: false,
+                    av_mix_mode: None,
+                    recording_mode: models::RecordingMode::LocalMode,
+                },
+            ];
+
+            for mic in usb_mics {
+                if let Some(opts) = get_best_publish_options_for_device(mic) {
+                    configs.push(DeviceRecordingAndStreamingConfig {
+                        publish_options: opts,
+                        enable_streaming: true,
+                        av_mix_mode: None,
+                        recording_mode: models::RecordingMode::LocalMode,
+                    });
+                }
+            }
+
+            return Some(configs);
+        }
     }
 
     let config_file = app_dir.join("selected_devices.json");
@@ -327,7 +353,6 @@ pub fn initialize_streaming_config(
         None
     }
 }
-
 #[tauri::command]
 pub fn get_streaming_config(
     app_state: tauri::State<'_, models::AppState>,
