@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
 import { invoke } from '@tauri-apps/api/core';
-import type { RegistrationResponse, MediaDeviceInfo } from '$lib/components/types';
+import type { RegistrationResponse, MediaDeviceInfo } from '#lib/components/types.js';
 import { goto } from '$app/navigation';
 
 export const load: PageLoad = async () => {

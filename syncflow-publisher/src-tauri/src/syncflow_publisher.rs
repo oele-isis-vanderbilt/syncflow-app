@@ -308,6 +308,7 @@ pub async fn record_publish_to_syncflow_with_cancellation(
                 for config in streaming_configs.iter_mut() {
                     match &mut config.media_stream {
                         MediaStream::Individual(gst_stream) => {
+                            println!("Cancelled");
                             let _ = gst_stream.stop().await;
                         }
                         MediaStream::AvMix(av_stream) => {
