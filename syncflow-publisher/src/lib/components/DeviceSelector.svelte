@@ -1,6 +1,7 @@
 <script lang="ts">
     import type { MediaDeviceInfo, PublishOptions } from './types';
-    import { Button, Select, Toggle } from 'flowbite-svelte';
+    import { Badge, Button, Heading, Label, Select, Toggle } from 'flowbite-svelte';
+    import { PlusOutline } from 'flowbite-svelte-icons';
 
     let {
         device,
@@ -130,66 +131,43 @@
 
     let streamingDisabled = $state(false);
 
-    $inspect(selectedOption);
+    const KIND_LABELS: Record<string, { kind: string; placeholder: string }> = {
+        'Video/Source': { kind: 'Video', placeholder: 'Select resolution and codec' },
+        'Audio/Source': { kind: 'Audio', placeholder: 'Select audio options' },
+        'Screen/Source': { kind: 'Screen', placeholder: 'Select screen options' },
+    };
+    let kindLabel = $derived(KIND_LABELS[device.deviceClass]);
+    const selectId = $props.id();
 </script>
 
-<div class="bg-white rounded-2xl shadow-xl p-8 mt-2 border border-purple-100">
-    <div class="flex flex-col justify-between gap-2">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="text-md font-semibold text-blue-700">
-                {device.displayName} ({device.deviceClass})
-            </h3>
-            <Toggle bind:checked={streamingDisabled}>
-                <span class="text-xs">Disbale Streaming</span>
-            </Toggle>
+<div class="space-y-3 rounded-lg border border-gray-200 p-3">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2">
+            <Heading tag="h5" class="w-auto truncate text-lg">{device.displayName}</Heading>
+            <Badge color="gray">{device.deviceClass}</Badge>
         </div>
-        {#if device.deviceClass == 'Video/Source'}
-            <Select
-                items={selectOptions}
-                placeholder="Select Resolution and Codecs"
-                bind:value={selectedOption}
-            />
-            {#if selectedOption}
-                <Button
-                    color="blue"
-                    class="mt-2"
-                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
-                >
-                    Add Video Device
-                </Button>
-            {/if}
-        {/if}
-        {#if device.deviceClass == 'Audio/Source'}
-            <Select
-                items={selectOptions}
-                placeholder="Select Audio Options"
-                bind:value={selectedOption}
-            />
-            {#if selectedOption}
-                <Button
-                    color="blue"
-                    class="mt-2"
-                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
-                >
-                    Add Audio Device
-                </Button>
-            {/if}
-        {/if}
-        {#if device.deviceClass == 'Screen/Source'}
-            <Select
-                items={selectOptions}
-                placeholder="Select Screen Options"
-                bind:value={selectedOption}
-            />
-            {#if selectedOption}
-                <Button
-                    color="blue"
-                    class="mt-2"
-                    onclick={() => addDevice(selectedOption!, !streamingDisabled)}
-                >
-                    Add Screen Device
-                </Button>
-            {/if}
-        {/if}
+        <Toggle bind:checked={streamingDisabled} size="small">
+            <span class="text-sm">Record only (no streaming)</span>
+        </Toggle>
     </div>
+    {#if kindLabel}
+        <div>
+            <Label for={selectId} class="mb-2">Format</Label>
+            <Select
+                id={selectId}
+                items={selectOptions}
+                placeholder={kindLabel.placeholder}
+                bind:value={selectedOption}
+            />
+        </div>
+        {#if selectedOption}
+            <Button
+                color="alternative"
+                size="sm"
+                onclick={() => addDevice(selectedOption!, !streamingDisabled)}
+            >
+                <PlusOutline class="me-1 h-4 w-4" />Add {kindLabel.kind} Device
+            </Button>
+        {/if}
+    {/if}
 </div>
