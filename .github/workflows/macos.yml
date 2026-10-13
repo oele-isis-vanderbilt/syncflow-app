@@ -2,15 +2,13 @@
 # (scripts/gstreamer/fetch-macos.sh) and publishes a DMG per architecture:
 #   syncflow-publisher-<short sha>-aarch64.dmg
 #   syncflow-publisher-<short sha>-x86_64.dmg
-# Every run uploads them as workflow artifacts; pushes to main also publish
-# them on the rolling "nightly" pre-release.
+# Every run uploads them as workflow artifacts;
 name: macOS Build
 
 on:
   push:
     branches: 
       - main
-      - 88-package-gstreamer-for-macos
   workflow_dispatch:
 
 # Queue pushes to the same branch rather than cancelling, so a main build is
