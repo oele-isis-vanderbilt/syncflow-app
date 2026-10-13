@@ -1889,6 +1889,10 @@ impl GstMediaDevice {
         appsink.set_property("emit-signals", true);
         appsink.set_property("drop", true);
         appsink.set_property("max-buffers", 1u32);
+        // Live pipelines must not wait on this sink to preroll: it would hold the first
+        // buffer, block its tee branch, and starve the file branch (x264enc never emits,
+        // so filesink never prerolls and the pipeline never reaches PLAYING).
+        appsink.set_property("async", false);
 
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()

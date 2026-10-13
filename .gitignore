@@ -2,3 +2,6 @@
 .env
 recordings
 .DS_Store
+
+# Vendored GStreamer (scripts/gstreamer/fetch-macos.sh)
+/third_party/gstreamer/

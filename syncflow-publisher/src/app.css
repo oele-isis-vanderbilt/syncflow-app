@@ -23,52 +23,52 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-	/* Primary: Vanderbilt gold. Light shades = brand gold, 600+ = Oak bronze,
+    /* Primary: Vanderbilt gold. Light shades = brand gold, 600+ = Oak bronze,
 	   dark enough for white text. Buttons, links, focus rings, active states. */
-	--color-primary-50: #fbf7ee;
-	--color-primary-100: #f5ecd7;
-	--color-primary-200: #ecdcb5;
-	--color-primary-300: #dec58d;
-	--color-primary-400: #cfae70;
-	--color-primary-500: #b49248;
-	--color-primary-600: #946e24;
-	--color-primary-700: #7a5a1d;
-	--color-primary-800: #5f4617;
-	--color-primary-900: #453311;
-	--color-primary-950: #2a1f0a;
+    --color-primary-50: #fbf7ee;
+    --color-primary-100: #f5ecd7;
+    --color-primary-200: #ecdcb5;
+    --color-primary-300: #dec58d;
+    --color-primary-400: #cfae70;
+    --color-primary-500: #b49248;
+    --color-primary-600: #946e24;
+    --color-primary-700: #7a5a1d;
+    --color-primary-800: #5f4617;
+    --color-primary-900: #453311;
+    --color-primary-950: #2a1f0a;
 
-	/* Secondary: Vanderbilt Sky. Supporting accents, info states, data viz. */
-	--color-secondary-50: #f4f7f9;
-	--color-secondary-100: #e8eef2;
-	--color-secondary-200: #d4dee5;
-	--color-secondary-300: #bac7d1;
-	--color-secondary-400: #94a7b5;
-	--color-secondary-500: #73889a;
-	--color-secondary-600: #5b6f80;
-	--color-secondary-700: #4a5a68;
-	--color-secondary-800: #3d4a55;
-	--color-secondary-900: #333e47;
-	--color-secondary-950: #20282e;
+    /* Secondary: Vanderbilt Sky. Supporting accents, info states, data viz. */
+    --color-secondary-50: #f4f7f9;
+    --color-secondary-100: #e8eef2;
+    --color-secondary-200: #d4dee5;
+    --color-secondary-300: #bac7d1;
+    --color-secondary-400: #94a7b5;
+    --color-secondary-500: #73889a;
+    --color-secondary-600: #5b6f80;
+    --color-secondary-700: #4a5a68;
+    --color-secondary-800: #3d4a55;
+    --color-secondary-900: #333e47;
+    --color-secondary-950: #20282e;
 
-	/* Neutrals: Vanderbilt cream → black, replacing Tailwind's blue-tinted gray.
+    /* Neutrals: Vanderbilt cream → black, replacing Tailwind's blue-tinted gray.
 	   500 is darker than brand Dark Gray (#777777) so muted text passes AA on
    white, gray-50 and gray-100 surfaces. */
-	--color-gray-50: #f5f3ef;
-	--color-gray-100: #ecebe8;
-	--color-gray-200: #e4e4e4;
-	--color-gray-300: #cfcfcf;
-	--color-gray-400: #a3a3a3;
-	--color-gray-500: #6a6a6a;
-	--color-gray-600: #5c5c5c;
-	--color-gray-700: #454545;
-	--color-gray-800: #2e2e2e;
-	--color-gray-900: #1c1c1c;
-	--color-gray-950: #111111;
+    --color-gray-50: #f5f3ef;
+    --color-gray-100: #ecebe8;
+    --color-gray-200: #e4e4e4;
+    --color-gray-300: #cfcfcf;
+    --color-gray-400: #a3a3a3;
+    --color-gray-500: #6a6a6a;
+    --color-gray-600: #5c5c5c;
+    --color-gray-700: #454545;
+    --color-gray-800: #2e2e2e;
+    --color-gray-900: #1c1c1c;
+    --color-gray-950: #111111;
 
-	/* Typography */
-	--font-sans:
-		'Inter Variable', ui-sans-serif, system-ui, sans-serif; /* self-hosted, imported in +layout.svelte */
-	--font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Typography */
+    --font-sans:
+        'Inter Variable', ui-sans-serif, system-ui, sans-serif; /* self-hosted, imported in +layout.svelte */
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* Scan Flowbite's compiled components (paths relative to this file). */
@@ -76,7 +76,7 @@
 @source '../node_modules/flowbite-svelte-icons/dist';
 
 @layer base {
-	html {
-		@apply bg-white text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100;
-	}
+    html {
+        @apply bg-white text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100;
+    }
 }

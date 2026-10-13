@@ -1,0 +1,126 @@
+# Builds the macOS app with the vendored GStreamer framework bundled
+# (scripts/gstreamer/fetch-macos.sh) and publishes a DMG per architecture:
+#   syncflow-publisher-<short sha>-aarch64.dmg
+#   syncflow-publisher-<short sha>-x86_64.dmg
+# Every run uploads them as workflow artifacts; pushes to main also publish
+# them on the rolling "nightly" pre-release.
+name: macOS Build
+
+on:
+  push:
+    branches: 
+      - main
+      - 88-package-gstreamer-for-macos
+  workflow_dispatch:
+
+# Queue pushes to the same branch rather than cancelling, so a main build is
+# never stopped halfway through publishing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-apple-darwin
+            runner: macos-latest
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The fetch script's pinned version and checksums are the cache key.
+      - name: Cache GStreamer
+        uses: actions/cache@v4
+        with:
+          path: third_party/gstreamer/macos
+          key: gstreamer-macos-${{ hashFiles('scripts/gstreamer/fetch-macos.sh') }}
+
+      - name: Install pkg-config
+        run: command -v pkg-config || brew install pkgconf
+
+      - name: Fetch GStreamer
+        run: scripts/gstreamer/fetch-macos.sh
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: syncflow-publisher/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: syncflow-publisher
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Runs the frontend build (beforeBuildCommand), compiles the release
+      # binary, copies GStreamer.framework into the app and creates the DMG.
+      - name: Build app
+        working-directory: syncflow-publisher
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg
+
+      # The app must load GStreamer from its own Contents/Frameworks, never
+      # from a system install.
+      - name: Check bundle
+        run: |
+          app="target/${{ matrix.target }}/release/bundle/macos/syncflow-publisher.app"
+          bin="${app}/Contents/MacOS/syncflow-publisher"
+          status=0
+          if [ ! -f "${app}/Contents/Frameworks/GStreamer.framework/Versions/1.0/lib/libgstreamer-1.0.0.dylib" ]; then
+            echo "::error::GStreamer.framework is missing from the app bundle"
+            status=1
+          fi
+          libs="$(otool -L "${bin}")"
+          if echo "${libs}" | grep -E '/(opt/homebrew|usr/local)/'; then
+            echo "::error::the app links a system library"
+            status=1
+          fi
+          if ! echo "${libs}" | grep -q '@rpath/libgstreamer-1.0.0.dylib'; then
+            echo "::error::the app does not link the bundled libgstreamer"
+            status=1
+          fi
+          if ! otool -l "${bin}" | grep -q '@executable_path/../Frameworks/GStreamer.framework/Versions/1.0/lib'; then
+            echo "::error::the app has no rpath to the bundled framework"
+            status=1
+          fi
+          du -sh "${app}"
+          exit "${status}"
+
+      - name: Rename DMG
+        id: dmg
+        run: |
+          dmgs=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ] || [ ! -f "${dmgs[0]}" ]; then
+            echo "::error::expected exactly one DMG, found: ${dmgs[*]}"
+            exit 1
+          fi
+          name="syncflow-publisher-${GITHUB_SHA::7}-${{ matrix.arch }}.dmg"
+          mkdir -p dist
+          mv "${dmgs[0]}" "dist/${name}"
+          du -h "dist/${name}"
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dmg.outputs.name }}
+          path: dist/${{ steps.dmg.outputs.name }}
+          if-no-files-found: error
+          retention-days: 30

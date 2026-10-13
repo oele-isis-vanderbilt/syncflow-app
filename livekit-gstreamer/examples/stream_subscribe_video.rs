@@ -24,7 +24,7 @@ async fn main() -> Result<(), GStreamerError> {
             height: 1080,
             framerate: 30,
             device_id: if cfg!(target_os = "macos") {
-                "0x11000000c45636b".to_string()
+                "6C707041-05AC-0011-0007-000000000001".to_string()
             } else {
                 "/dev/video0".to_string()
             },

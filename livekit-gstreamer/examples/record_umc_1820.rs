@@ -12,9 +12,7 @@ async fn main() -> Result<(), GStreamerError> {
         panic!("This example is only supported on Linux");
     }
 
-    gstreamer::init().map_err(|e| {
-        GStreamerError::PipelineError(format!("Failed to initialize gstreamer: {}", e))
-    })?;
+    livekit_gstreamer::initialize_gstreamer();
 
     let publish_options = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
