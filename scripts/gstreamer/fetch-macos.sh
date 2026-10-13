@@ -142,4 +142,9 @@ echo "${GST_VERSION}" > "${STAMP}"
 
 link_sdk
 
+# Remove .gitignore
+
+rm -rf ${FRAMEWORK}/.gitignore
+rm -rf ${FRAMEWORK}/Headers
+
 echo "GStreamer ${GST_VERSION} ready at ${FRAMEWORK}"
