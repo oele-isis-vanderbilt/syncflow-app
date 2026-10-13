@@ -10,7 +10,7 @@ mod wait;
 async fn main() -> Result<(), GStreamerError> {
     dotenv().ok();
     // Initialize gstreamer
-    gstreamer::init().unwrap();
+    livekit_gstreamer::initialize_gstreamer();
     let mut stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
             codec: "video/x-raw".to_string(),

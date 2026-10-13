@@ -418,9 +418,10 @@ fn get_recording_mode(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Sets GStreamer's plugin env vars, so it must run before Tauri starts threads.
+    livekit_gstreamer::initialize_gstreamer();
     tauri::Builder::default()
         .setup(|app| {
-            livekit_gstreamer::initialize_gstreamer();
             let app_dir = create_app_dir().expect("Failed to create app directory");
             let recordings_dir = app_dir.clone().join("recordings");
             let s3_config_file = app_dir.join("s3_credentials.json");

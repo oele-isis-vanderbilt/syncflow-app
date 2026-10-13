@@ -24,6 +24,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+        "frameworks": ["../../third_party/gstreamer/macos/GStreamer.framework"]
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

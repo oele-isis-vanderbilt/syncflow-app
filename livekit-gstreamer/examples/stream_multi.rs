@@ -9,9 +9,7 @@ mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), GStreamerError> {
-    gstreamer::init().map_err(|e| {
-        GStreamerError::PipelineError(format!("Failed to initialize gstreamer: {}", e))
-    })?;
+    livekit_gstreamer::initialize_gstreamer();
 
     let mut audio_stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {

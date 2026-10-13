@@ -1,7 +1,7 @@
 use livekit_gstreamer::{get_devices_info, MediaDeviceInfo};
 
 fn main() {
-    gstreamer::init().unwrap();
+    livekit_gstreamer::initialize_gstreamer();
     let devices = get_devices_info();
 
     let (video_devices, audio_devices, screen_devices): (

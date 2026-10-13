@@ -11,7 +11,7 @@ use std::{env, sync::Arc};
 async fn main() -> Result<(), LKParticipantError> {
     dotenv().ok();
     // Initialize gstreamer
-    gstreamer::init().unwrap();
+    livekit_gstreamer::initialize_gstreamer();
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
 
