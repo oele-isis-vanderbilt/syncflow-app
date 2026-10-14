@@ -8,8 +8,9 @@ use super::ids::OutputId;
 
 const MAX_SLUG_LEN: usize = 32;
 
-/// Reduces a device name to ASCII letters, digits and single dashes, at most 32 characters.
-pub fn device_slug(name: &str) -> String {
+/// Reduces `name` to ASCII letters, digits and single dashes, at most `max_len`
+/// characters, with no leading or trailing dash. May be empty.
+pub fn slug(name: &str, max_len: usize) -> String {
     let mut slug = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -19,11 +20,18 @@ pub fn device_slug(name: &str) -> String {
         }
     }
     let slug = slug.trim_matches('-');
-    let slug = slug[..slug.len().min(MAX_SLUG_LEN)].trim_end_matches('-');
+    slug[..slug.len().min(max_len)]
+        .trim_end_matches('-')
+        .to_string()
+}
+
+/// Reduces a device name to ASCII letters, digits and single dashes, at most 32 characters.
+pub fn device_slug(name: &str) -> String {
+    let slug = slug(name, MAX_SLUG_LEN);
     if slug.is_empty() {
         "device".to_string()
     } else {
-        slug.to_string()
+        slug
     }
 }
 

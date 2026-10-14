@@ -30,10 +30,7 @@ use crate::{
     models::{ActiveSession, S3Config},
     register::{get_credentials, get_device_details, RegistrationResponse},
     session_listener::ClonableNewSessionMessage,
-    syncflow_publisher::{
-        local_recording_only, record_publish_to_syncflow,
-        record_publish_to_syncflow_with_cancellation,
-    },
+    syncflow_publisher::{local_recording_only, record_publish_to_syncflow_with_cancellation},
     utils::load_json,
 };
 
@@ -319,9 +316,11 @@ async fn start_local_recording(
     let cancel_token_clone = cancel_token.clone();
     let session_name_clone = session_name.clone();
     let session_id = format!("local-{}", system_time_nanos());
+    let session_id_clone = session_id.clone();
 
     let task = tauri::async_runtime::spawn(async move {
         local_recording_only(
+            session_id_clone,
             session_name_clone,
             configs,
             app_handle,

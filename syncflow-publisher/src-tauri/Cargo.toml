@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 pkg-config = "0.3"
 
 [dependencies]
+chrono = "0.4.41"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

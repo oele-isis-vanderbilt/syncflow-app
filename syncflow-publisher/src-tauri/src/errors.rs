@@ -20,6 +20,9 @@ pub enum SyncFlowPublisherError {
     #[error("GStreamer error: {0}")]
     GStreamerError(#[from] livekit_gstreamer::GStreamerError),
 
+    #[error("Recording error: {0}")]
+    CompositeError(#[from] livekit_gstreamer::composite::CompositeError),
+
     #[error("Amqp error: {0}")]
     AmqpError(#[from] amqprs::error::Error),
 
@@ -56,7 +59,9 @@ impl serde::Serialize for SyncFlowPublisherError {
             Self::ProjectClientError(_) => ErrorKind::ProjectClient(error_message),
             Self::NotIntialized(_) => ErrorKind::Io(error_message),
             Self::ConfigError(_) => ErrorKind::Config(error_message),
-            Self::GStreamerError(_) => ErrorKind::GStreamer(error_message),
+            Self::GStreamerError(_) | Self::CompositeError(_) => {
+                ErrorKind::GStreamer(error_message)
+            }
             Self::AmqpError(_) => ErrorKind::Amqp(error_message),
             Self::InitializationError(_) => ErrorKind::Initialize(error_message),
             Self::S3Error(_) => ErrorKind::S3(error_message),

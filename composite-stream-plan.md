@@ -477,7 +477,7 @@ For each event and each start error, it does two things.
 
 ## 11. Delivery
 
-**Status (2026-10-14):** steps 0–2 are implemented in `livekit-gstreamer/src/composite/` and `LKParticipant::publish_composite`/`publish_data`, with 56 tests on live test sources (`test-sources` feature) and the examples `stream_composite`, `lk_publish_composite` and `lk_listen_data`. The old API (`GstMediaStream`, `AvMixStream`, `handle_streams`) is still in place. Step 3 (the publisher switch-over, `ROOM_EVENTS` forwarding and the UI) is next. Not yet verified on real hardware.
+**Status (2026-10-14):** steps 0–2 are implemented in `livekit-gstreamer/src/composite/` and `LKParticipant::publish_composite`/`publish_data`, verified on a MacBook with its camera and two USB mics. Step 3 is split in three: **backend** (done: both flows run on `CompositeStream`, readable folders `<YYYY-MM-DD_HH-MM>_<session>_<short-id>` with `-2`… on collision, manifest context, `can_publish_data`, failures forwarded to the UI and `ROOM_EVENTS`, upload when any file finalized; the room is joined before recording starts, and a failed join stops the session as before), **UI** (next; the backend still reads the per-device configs and converts them with `CompositeConfig::from_device_configs`), then **cleanup** (delete the old API).
 
 
 Each PR builds on its own. Per CLAUDE.md, public API changes update the publisher in the same PR.
