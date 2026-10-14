@@ -1,5 +1,7 @@
+use rusoto_core::RusotoError;
 use rusoto_s3::{
-    CreateMultipartUploadError, CreateMultipartUploadRequest, S3Client, UploadPartRequest, S3,
+    CompleteMultipartUploadError, CreateMultipartUploadError, CreateMultipartUploadRequest,
+    S3Client, UploadPartError, S3,
 };
 use std::{fs::File, path::PathBuf};
 use tokio::sync::mpsc::Sender;
@@ -12,27 +14,45 @@ use tokio::io::AsyncReadExt;
 
 use thiserror::Error;
 
+// Rusoto errors carry whole HTTP responses, so they are boxed to keep this error (and
+// every `Result` that wraps it) small.
 #[derive(Debug, Error)]
 pub enum S3UploaderError {
     #[error("Failed to read file: {0}")]
-    FileReadError(#[from] std::io::Error),
+    FileRead(#[from] std::io::Error),
 
     #[error("Failed to create multipart upload: {0}")]
-    CreateMultipartUploadError(#[from] rusoto_core::RusotoError<CreateMultipartUploadError>),
+    CreateMultipartUpload(Box<RusotoError<CreateMultipartUploadError>>),
 
     #[error("Failed to upload part: {0}")]
-    UploadPartError(#[from] rusoto_core::RusotoError<rusoto_s3::UploadPartError>),
+    UploadPart(Box<RusotoError<UploadPartError>>),
 
     #[error("Failed to complete multipart upload: {0}")]
-    CompleteMultipartUploadError(
-        #[from] rusoto_core::RusotoError<rusoto_s3::CompleteMultipartUploadError>,
-    ),
+    CompleteMultipartUpload(Box<RusotoError<CompleteMultipartUploadError>>),
+}
+
+impl From<RusotoError<CreateMultipartUploadError>> for S3UploaderError {
+    fn from(error: RusotoError<CreateMultipartUploadError>) -> Self {
+        Self::CreateMultipartUpload(Box::new(error))
+    }
+}
+
+impl From<RusotoError<UploadPartError>> for S3UploaderError {
+    fn from(error: RusotoError<UploadPartError>) -> Self {
+        Self::UploadPart(Box::new(error))
+    }
+}
+
+impl From<RusotoError<CompleteMultipartUploadError>> for S3UploaderError {
+    fn from(error: RusotoError<CompleteMultipartUploadError>) -> Self {
+        Self::CompleteMultipartUpload(Box::new(error))
+    }
 }
 
 fn archive_directory(directory: &PathBuf, zip_path: &PathBuf) -> Result<PathBuf, std::io::Error> {
     let file = File::create(zip_path)?;
     let zip = ZipWriter::new(file);
-    zip.create_from_directory(&directory)?;
+    zip.create_from_directory(directory)?;
     Ok(zip_path.clone())
 }
 
