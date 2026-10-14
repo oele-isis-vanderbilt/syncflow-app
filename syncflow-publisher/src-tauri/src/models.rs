@@ -12,19 +12,7 @@ use syncflow_client::ProjectClient;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    errors::SyncFlowPublisherError, register::RegistrationResponse,
-    session_listener::SessionListener,
-};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceRecordingAndStreamingConfig {
-    pub publish_options: PublishOptions,
-    pub enable_streaming: bool,
-    pub av_mix_mode: Option<AvMixMode>,
-    pub recording_mode: RecordingMode,
-}
+use crate::{register::RegistrationResponse, session_listener::SessionListener};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -33,17 +21,9 @@ pub enum RecordingMode {
     LocalMode,   // Manual local recording
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum AvMixMode {
-    Primary, // Main video source
-    Mic1,    // Primary audio
-    Mic2,    // Secondary audio
-}
-
 /// What one recording contains: the AV mix (camera plus up to two mics recorded L/R), an
 /// optional screen, and additional cameras and mics, each with its own stream toggle.
-/// Built from the per-device configs the UI saves (`from_device_configs`).
+/// Saved to `composite_config.json` by the setup page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvMixConfig {
@@ -73,82 +53,31 @@ pub struct CompositeConfig {
 }
 
 impl CompositeConfig {
-    /// Converts the per-device configs the UI saves: the `primary`/`mic1`/`mic2` AV mix
-    /// roles become the AV mix (streamed when the primary or mic 1 streams, as before),
-    /// and every other device becomes its own output with its own stream toggle.
-    pub fn from_device_configs(
-        configs: &[DeviceRecordingAndStreamingConfig],
-    ) -> Result<Self, SyncFlowPublisherError> {
-        let config_error = |message: &str| SyncFlowPublisherError::ConfigError(message.into());
-        let role = |mode: AvMixMode| configs.iter().find(|c| c.av_mix_mode == Some(mode.clone()));
-        let audio = |config: &DeviceRecordingAndStreamingConfig, what: &str| match &config
-            .publish_options
-        {
-            PublishOptions::Audio(options) => Ok(options.clone()),
-            _ => Err(config_error(&format!(
-                "the AV mix {what} must be a microphone"
-            ))),
-        };
-
-        let av_mix = match role(AvMixMode::Primary) {
-            None if configs.iter().any(|c| c.av_mix_mode.is_some()) => {
-                return Err(config_error("the AV mix needs a camera"))
-            }
-            None => None,
-            Some(primary) => {
-                let camera = match &primary.publish_options {
-                    PublishOptions::Video(options) => options.clone(),
-                    _ => return Err(config_error("the AV mix video must be a camera")),
-                };
-                let mic_1 =
-                    role(AvMixMode::Mic1).ok_or_else(|| config_error("the AV mix needs mic 1"))?;
-                let mic_2 = role(AvMixMode::Mic2)
-                    .map(|c| audio(c, "mic 2"))
-                    .transpose()?;
-                Some(AvMixConfig {
-                    camera,
-                    mic_1: audio(mic_1, "mic 1")?,
-                    mic_2,
-                    stream: primary.enable_streaming || mic_1.enable_streaming,
-                })
-            }
-        };
-
-        let mut screen = None;
-        let mut cameras = Vec::new();
-        let mut mics = Vec::new();
-        for config in configs.iter().filter(|c| c.av_mix_mode.is_none()) {
-            let stream = config.enable_streaming;
-            match &config.publish_options {
-                PublishOptions::Video(options) => cameras.push(OutputConfig {
-                    options: options.clone(),
-                    stream,
-                }),
-                PublishOptions::Audio(options) => mics.push(OutputConfig {
-                    options: options.clone(),
-                    stream,
-                }),
-                PublishOptions::Screen(options) => {
-                    if screen.is_some() {
-                        return Err(config_error("only one screen can be recorded"));
-                    }
-                    screen = Some(OutputConfig {
-                        options: options.clone(),
-                        stream,
-                    });
-                }
-            }
+    /// Every device of the config with its requested format, for checking that the
+    /// devices exist and support it.
+    pub fn publish_options(&self) -> Vec<PublishOptions> {
+        let mut options = Vec::new();
+        if let Some(mix) = &self.av_mix {
+            options.push(PublishOptions::Video(mix.camera.clone()));
+            options.push(PublishOptions::Audio(mix.mic_1.clone()));
+            options.extend(mix.mic_2.clone().map(PublishOptions::Audio));
         }
-
-        Ok(Self {
-            av_mix,
-            screen,
-            cameras,
-            mics,
-            recording_mode: configs
-                .first()
-                .map_or(RecordingMode::SessionMode, |c| c.recording_mode.clone()),
-        })
+        options.extend(
+            self.screen
+                .iter()
+                .map(|s| PublishOptions::Screen(s.options.clone())),
+        );
+        options.extend(
+            self.cameras
+                .iter()
+                .map(|c| PublishOptions::Video(c.options.clone())),
+        );
+        options.extend(
+            self.mics
+                .iter()
+                .map(|m| PublishOptions::Audio(m.options.clone())),
+        );
+        options
     }
 
     /// Whether any output is streamed.
@@ -231,7 +160,7 @@ pub struct AppState {
     pub client: Arc<Mutex<Option<ProjectClient>>>,
     pub app_dir: PathBuf,
     pub registration: Arc<Mutex<Option<RegistrationResponse>>>,
-    pub recording_and_streaming_config: Arc<Mutex<Option<Vec<DeviceRecordingAndStreamingConfig>>>>,
+    pub recording_and_streaming_config: Arc<Mutex<Option<CompositeConfig>>>,
     pub session_listener: Arc<AsyncMutex<Option<SessionListener>>>,
     pub active_sessions: Arc<AsyncMutex<HashMap<String, ActiveSession>>>,
     pub currently_joined_session: Arc<AsyncMutex<Option<String>>>,
@@ -242,124 +171,33 @@ pub struct AppState {
 mod tests {
     use super::*;
 
-    fn video(id: &str) -> PublishOptions {
-        PublishOptions::Video(VideoPublishOptions {
-            codec: "video/x-raw".into(),
-            device_id: id.into(),
-            width: 1280,
-            height: 720,
-            framerate: 30,
-            local_file_save_options: None,
-        })
-    }
-
-    fn audio(id: &str) -> PublishOptions {
-        PublishOptions::Audio(AudioPublishOptions {
-            codec: "audio/x-raw".into(),
-            device_id: id.into(),
-            framerate: 48000,
-            channels: 1,
-            selected_channel: None,
-            local_file_save_options: None,
-        })
-    }
-
-    fn screen(id: &str) -> PublishOptions {
-        PublishOptions::Screen(ScreenPublishOptions {
-            codec: "video/x-raw".into(),
-            screen_id_or_name: id.into(),
-            width: 1512,
-            height: 982,
-            framerate: 15,
-            local_file_save_options: None,
-        })
-    }
-
-    fn device(
-        options: PublishOptions,
-        enable_streaming: bool,
-        av_mix_mode: Option<AvMixMode>,
-    ) -> DeviceRecordingAndStreamingConfig {
-        DeviceRecordingAndStreamingConfig {
-            publish_options: options,
-            enable_streaming,
-            av_mix_mode,
-            recording_mode: RecordingMode::LocalMode,
-        }
-    }
-
-    fn device_id(options: &impl Serialize) -> String {
-        let json = serde_json::to_value(options).unwrap();
-        json["deviceId"].as_str().unwrap().to_string()
-    }
+    /// The JSON the setup page sends (`CompositeConfig` in `types.ts`).
+    const UI_CONFIG: &str = r#"{
+        "avMix": {
+            "camera": { "codec": "video/x-raw", "deviceId": "cam", "width": 1280, "height": 720, "framerate": 30 },
+            "mic1": { "codec": "audio/x-raw", "deviceId": "mic-a", "framerate": 48000, "channels": 1 },
+            "mic2": null,
+            "stream": true
+        },
+        "screen": null,
+        "cameras": [],
+        "mics": [{ "options": { "codec": "audio/x-raw", "deviceId": "umc", "framerate": 48000, "channels": 4, "selectedChannel": 3 }, "stream": false }],
+        "recordingMode": "localMode"
+    }"#;
 
     #[test]
-    fn av_mix_roles_become_the_av_mix() {
-        let config = CompositeConfig::from_device_configs(&[
-            device(video("cam"), false, Some(AvMixMode::Primary)),
-            device(audio("mic-a"), true, Some(AvMixMode::Mic1)),
-            device(audio("mic-b"), false, Some(AvMixMode::Mic2)),
-        ])
-        .unwrap();
+    fn parses_the_setup_page_config() {
+        let config: CompositeConfig = serde_json::from_str(UI_CONFIG).unwrap();
         let mix = config.av_mix.as_ref().unwrap();
-        assert_eq!(device_id(&mix.camera), "cam");
-        assert_eq!(device_id(&mix.mic_1), "mic-a");
-        assert_eq!(device_id(mix.mic_2.as_ref().unwrap()), "mic-b");
-        assert!(mix.stream, "streams when the primary or mic 1 streams");
-        assert!(config.cameras.is_empty() && config.mics.is_empty());
+        assert_eq!(mix.mic_1.device_id, "mic-a");
+        assert!(mix.mic_2.is_none());
+        assert_eq!(config.mics[0].options.selected_channel, Some(3));
         assert_eq!(config.recording_mode, RecordingMode::LocalMode);
-    }
-
-    #[test]
-    fn other_devices_become_their_own_outputs() {
-        let config = CompositeConfig::from_device_configs(&[
-            device(video("cam"), true, Some(AvMixMode::Primary)),
-            device(audio("mic-a"), false, Some(AvMixMode::Mic1)),
-            device(video("c920"), false, None),
-            device(audio("umc"), true, None),
-            device(screen("1"), false, None),
-        ])
-        .unwrap();
-        assert!(config.av_mix.as_ref().unwrap().mic_2.is_none());
-        assert_eq!(config.cameras.len(), 1);
-        assert!(!config.cameras[0].stream);
-        assert_eq!(config.mics.len(), 1);
-        assert!(config.mics[0].stream);
-        assert!(config.screen.is_some());
+        assert_eq!(config.publish_options().len(), 3);
         assert!(config.streams_anything());
-    }
 
-    #[test]
-    fn without_av_mix_roles_there_is_no_av_mix() {
-        let config =
-            CompositeConfig::from_device_configs(&[device(audio("mic-a"), false, None)]).unwrap();
-        assert!(config.av_mix.is_none());
-        assert!(!config.streams_anything());
-    }
-
-    #[test]
-    fn invalid_av_mix_roles_are_config_errors() {
-        let cases = [
-            vec![device(audio("mic-a"), false, Some(AvMixMode::Mic1))],
-            vec![
-                device(screen("1"), false, Some(AvMixMode::Primary)),
-                device(audio("mic-a"), false, Some(AvMixMode::Mic1)),
-            ],
-            vec![device(video("cam"), false, Some(AvMixMode::Primary))],
-            vec![
-                device(video("cam"), false, Some(AvMixMode::Primary)),
-                device(video("c920"), false, Some(AvMixMode::Mic1)),
-            ],
-            vec![
-                device(screen("1"), false, None),
-                device(screen("2"), false, None),
-            ],
-        ];
-        for configs in cases {
-            assert!(matches!(
-                CompositeConfig::from_device_configs(&configs),
-                Err(SyncFlowPublisherError::ConfigError(_))
-            ));
-        }
+        let round_trip = serde_json::to_value(&config).unwrap();
+        assert_eq!(round_trip["avMix"]["mic1"]["deviceId"], "mic-a");
+        assert_eq!(round_trip["recordingMode"], "localMode");
     }
 }

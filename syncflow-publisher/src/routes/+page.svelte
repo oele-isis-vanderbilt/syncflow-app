@@ -13,36 +13,16 @@
     import SectionCard from '#lib/components/ui/SectionCard.svelte';
     import type { PageProps } from './$types';
     import RegistrationDetails from '#lib/components/RegistrationDetails.svelte';
-    import Devices from '#lib/components/Devices.svelte';
-    import { devicesStore } from '#lib/store.svelte.js';
-    import SelectedDevices from '#lib/components/SelectedDevices.svelte';
-    import type {
-        DeviceRecordingAndStreamingConfig,
-        RecordingMode,
-    } from '#lib/components/types.js';
+    import CompositeSetup from '#lib/components/CompositeSetup.svelte';
+    import { refreshDevices, setup } from '#lib/store.svelte.js';
+    import { counts, notices, toConfig, validate } from '#lib/compositeConfig.js';
+    import type { RecordingMode } from '#lib/components/types.js';
 
     let { data }: PageProps = $props();
 
     let registrationDetails = $derived.by(() => data.registration);
-    let mediaDevices = $derived.by(() => data.devices || []);
-
-    let {
-        getSelectedDevicesFn,
-        addDevice,
-        removeDevice,
-        getRemainingDevicesFn,
-        getStreamingConfigFn,
-        refreshAvailableDevices,
-        getAvMixMode,
-        setAvMixMode,
-        getAvMixRoles,
-        setAvMixRole,
-    } = devicesStore!;
-
-    let availableDevicesToSelect = $derived.by(() => {
-        const remainingDevicesFn = getRemainingDevicesFn();
-        return remainingDevicesFn();
-    });
+    // svelte-ignore state_referenced_locally
+    setup.devices = data.devices;
 
     let confirmDeregister = $state(false);
 
@@ -78,41 +58,36 @@
         });
     });
 
+    let issues = $derived(validate(setup.draft, setup.devices));
+    let setupNotices = $derived(notices(setup.draft, recordingMode, data.capabilities));
+    let summary = $derived(counts(setup.draft));
+    let refreshing = $state(false);
+
+    async function refresh() {
+        refreshing = true;
+        try {
+            await refreshDevices();
+        } catch (err) {
+            errorMessage = `Failed to refresh devices: ${JSON.stringify(err)}`;
+        } finally {
+            refreshing = false;
+        }
+    }
+
     async function start() {
-        const selectedDevicesFn = getSelectedDevicesFn();
-        const streamingConfigFn = getStreamingConfigFn();
-        const selectedDevices = selectedDevicesFn();
-        const streamingConfigs = streamingConfigFn();
-        const avMixMode = getAvMixMode();
-        const avMixRoles = getAvMixRoles();
-
-        const recordingAndStreamingConfig: DeviceRecordingAndStreamingConfig[] =
-            selectedDevices.map((option) => {
-                const deviceId = option.kind === 'Screen' ? option.screenIdOrName : option.deviceId;
-
-                return {
-                    enableStreaming: streamingConfigs[deviceId],
-                    publishOptions: option,
-                    avMixMode: avMixMode ? avMixRoles[deviceId] : undefined,
-                    recordingMode: recordingMode,
-                };
-            });
-
         starting = true;
         try {
             await invoke('set_streaming_config', {
-                configs: recordingAndStreamingConfig,
+                config: toConfig(setup.draft, recordingMode),
             });
             errorMessage = null;
             goto('/stream');
         } catch (err) {
-            errorMessage = `Failed to set streaming config: ${JSON.stringify(err)}`;
+            errorMessage = `Failed to save the recording setup: ${JSON.stringify(err)}`;
         } finally {
             starting = false;
         }
     }
-
-    let selectedCount = $derived(getSelectedDevicesFn()().length);
 </script>
 
 <div class="flex flex-wrap items-center justify-between gap-4">
@@ -167,24 +142,14 @@
     </div>
 </SectionCard>
 
-<div class="grid grid-cols-1 items-start gap-6 md:grid-cols-2">
-    <Devices
-        devices={availableDevicesToSelect}
-        onAddDevice={addDevice}
-        onRemoveDevice={removeDevice}
-        onRefresh={refreshAvailableDevices}
-    />
-    <SelectedDevices
-        allDevices={mediaDevices}
-        selectedDevicesFn={getSelectedDevicesFn()}
-        onRemoveDevice={removeDevice}
-        streamingConfigFn={getStreamingConfigFn()}
-        avMixMode={getAvMixMode()}
-        avMixRoles={getAvMixRoles()}
-        onAvMixModeChange={setAvMixMode}
-        onAvMixRoleChange={setAvMixRole}
-    />
-</div>
+<CompositeSetup
+    draft={setup.draft}
+    devices={setup.devices}
+    {issues}
+    notices={setupNotices}
+    {refreshing}
+    onrefresh={refresh}
+/>
 
 {#if errorMessage}
     <Alert color="red">
@@ -194,10 +159,13 @@
 {/if}
 
 <div class="flex items-center justify-end gap-4">
-    {#if !selectedCount}
-        <span class="text-sm text-gray-500">Select at least one device to continue</span>
-    {/if}
-    <Button color="primary" disabled={!selectedCount || starting} onclick={start}>
+    <span class="text-sm text-gray-500">
+        {summary.files} file{summary.files === 1 ? '' : 's'} · {summary.streams} stream{summary.streams ===
+        1
+            ? ''
+            : 's'}
+    </span>
+    <Button color="primary" disabled={issues.length > 0 || starting} onclick={start}>
         {#if starting}<Spinner size="4" color="gray" class="me-2" />{/if}
         {recordingMode === 'sessionMode' ? 'Start Session Listener' : 'Set Up Local Recording'}
     </Button>

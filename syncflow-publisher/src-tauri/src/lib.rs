@@ -19,7 +19,10 @@ use livekit_gstreamer::utils::system_time_nanos;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
-use devices::{delete_streaming_config, get_devices, get_streaming_config, set_streaming_config};
+use devices::{
+    delete_streaming_config, get_devices, get_pipeline_capabilities, get_streaming_config,
+    set_streaming_config,
+};
 use register::{delete_registration, register_to_syncflow};
 use session_listener::SessionListener;
 use tauri::{Emitter, Listener, Manager};
@@ -656,6 +659,7 @@ pub fn run() {
             stop_local_recording,
             set_recording_mode,
             get_recording_mode,
+            get_pipeline_capabilities,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

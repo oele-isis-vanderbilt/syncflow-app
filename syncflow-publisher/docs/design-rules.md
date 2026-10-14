@@ -116,6 +116,7 @@ App-specific states (keep these consistent across screens):
     | Local recording finished    | `completed`   | `green`  | Completed   |          |
     | Device streams to LiveKit   | `streaming`   | `green`  | Streaming   |          |
     | Device records only         | `recordOnly`  | `gray`   | Record only |          |
+    | Device or file failed       | `failed`      | `red`    | Failed      |          |
 
     Ended is gray, not red: it's a normal outcome. Red is reserved for live recording and errors.
 

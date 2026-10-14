@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::SyncFlowPublisherError,
-    models::{CompositeConfig, DeviceRecordingAndStreamingConfig, RecordingMode},
+    models::{CompositeConfig, RecordingMode},
     pipeline_events::{spawn_event_forwarder, DeviceDetails, EventContext},
     s3_uploader::upload_to_s3,
     utils::{recording_folder_name, short_session_id, unique_recording_dir},
@@ -242,7 +242,7 @@ async fn upload_recording(
 pub async fn record_publish_to_syncflow_with_cancellation(
     participant_name: String,
     session_details: NewSessionMessage,
-    configs: Vec<DeviceRecordingAndStreamingConfig>,
+    config: CompositeConfig,
     event_emitter: tauri::AppHandle,
     project_client: &syncflow_client::ProjectClient,
     out_dir: &std::path::Path,
@@ -254,11 +254,6 @@ pub async fn record_publish_to_syncflow_with_cancellation(
     let participant_name = participant_name.replace(".", "-").replace(" ", "-");
     let session_id = session_details.session_id.clone();
     let session_name = session_details.session_name.clone();
-
-    let config = match CompositeConfig::from_device_configs(&configs) {
-        Ok(config) => config,
-        Err(e) => return notify_failure(app, &session_id, e),
-    };
 
     let token =
         match generate_session_token(project_client, participant_name.clone(), &session_details)
@@ -381,7 +376,7 @@ pub async fn record_publish_to_syncflow_with_cancellation(
 pub async fn local_recording_only(
     session_id: String,
     session_name: String,
-    configs: Vec<DeviceRecordingAndStreamingConfig>,
+    config: CompositeConfig,
     event_emitter: tauri::AppHandle,
     out_dir: &std::path::Path,
     s3_client: Option<rusoto_s3::S3Client>,
@@ -391,10 +386,6 @@ pub async fn local_recording_only(
     let app = &event_emitter;
     let participant_name = "local-recorder";
 
-    let config = match CompositeConfig::from_device_configs(&configs) {
-        Ok(config) => config,
-        Err(e) => return notify_failure(app, &session_id, e),
-    };
     let folder = recording_folder_name(chrono::Local::now(), &session_name, "local");
     let context = serde_json::json!({
         "session": { "id": session_id, "name": session_name },
