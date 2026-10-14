@@ -261,8 +261,20 @@ mod test_sources {
         let mut parts = spec.split(':');
         let source = match parts.next() {
             Some("video") | Some("screen") => {
+                // `test:video:zone-plate` picks a pattern; any other suffix only makes the
+                // id unique.
+                let pattern = parts
+                    .next()
+                    .filter(|p| ["ball", "smpte", "zone-plate"].contains(p))
+                    .unwrap_or("ball");
                 let source = make_tagged_element("videotestsrc", scope, "src")?;
-                source.set_property_from_str("pattern", "ball");
+                source.set_property_from_str("pattern", pattern);
+                if pattern == "zone-plate" {
+                    // Fine, moving detail: encoders behave on it much as on a real camera.
+                    source.set_property("kx2", 20i32);
+                    source.set_property("ky2", 20i32);
+                    source.set_property("kt", 1i32);
+                }
                 source
             }
             Some("audio") => {
@@ -720,9 +732,10 @@ pub fn add_output_branch(
 
     let mut tee_pads = Vec::new();
     if let Some(tee) = video_tee {
-        let framerate = output_framerate(spec, output)?;
+        let (width, height, framerate) = output_video_format(spec, output)?;
         let encoder = make_tagged_element(pick_h264_encoder(&spec.encoders)?, scope, "venc")?;
-        configure_h264_encoder(&encoder, spec.encoders.video_kbps, framerate);
+        let kbps = spec.encoders.video_kbps_for(width, height, framerate);
+        configure_h264_encoder(&encoder, kbps, framerate);
         let rate = make_tagged_element("videorate", scope, "vrate")?;
         rate.set_property("max-rate", framerate);
         let parse = make_tagged_element("h264parse", scope, "vparse")?;
@@ -834,15 +847,18 @@ fn add_mux_input(
     link_tee(tee, first)
 }
 
-/// Frame rate of the camera or screen recorded in `output`.
-fn output_framerate(spec: &ResolvedSpec, output: &ResolvedOutput) -> Result<i32, CompositeError> {
+/// Size and frame rate of the camera or screen recorded in `output`.
+fn output_video_format(
+    spec: &ResolvedSpec,
+    output: &ResolvedOutput,
+) -> Result<(i32, i32, i32), CompositeError> {
     output
         .roles
         .iter()
         .filter_map(|role| spec.device(spec.device_of(*role)?))
         .find_map(|device| match &device.options {
-            DeviceOptions::Video(o) => Some(o.framerate),
-            DeviceOptions::Screen(o) => Some(o.framerate),
+            DeviceOptions::Video(o) => Some((o.width, o.height, o.framerate)),
+            DeviceOptions::Screen(o) => Some((o.width, o.height, o.framerate)),
             DeviceOptions::Audio(_) => None,
         })
         .ok_or_else(|| pipeline_error(format!("{} has no video role", output.id)))
@@ -894,6 +910,10 @@ fn stream_input_channels(spec: &ResolvedSpec, info: &SinkInfo) -> Result<i32, Co
 
 /// Sets bitrate and a keyframe every second (matching the MP4 fragments) on whichever
 /// H.264 encoder was picked; property names differ between encoders.
+///
+/// VideoToolbox (`vtenc_h264_hw`) runs at constant bitrate: in its default average
+/// bitrate mode it treats the target as a ceiling and delivered about a third of it
+/// (1.0 of 3 Mbps at 1552×1552), visibly softening the video.
 fn configure_h264_encoder(encoder: &Element, kbps: u32, framerate: i32) {
     let set = |name: &str, value: String| {
         if encoder.find_property(name).is_some() {
@@ -901,6 +921,7 @@ fn configure_h264_encoder(encoder: &Element, kbps: u32, framerate: i32) {
         }
     };
     set("bitrate", kbps.to_string());
+    set("rate-control", "cbr".into());
     set("speed-preset", "ultrafast".into());
     set("key-int-max", framerate.to_string());
     set("max-keyframe-interval", framerate.to_string());
@@ -1579,6 +1600,48 @@ mod tests {
         let av_mix = discover(&paths[&OutputId::AvMix]);
         assert_eq!(video_sizes(&av_mix), [(320, 240)], "encoder {encoder}");
         assert!(av_mix.duration().unwrap() >= gstreamer::ClockTime::from_mseconds(1500));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The encoder must deliver close to the bitrate it is given: VideoToolbox in its
+    /// default average-bitrate mode delivered about a third of it on a real camera, and
+    /// about a third on this moving zone plate too.
+    #[test]
+    fn video_files_reach_their_target_bitrate() {
+        let dir = temp_dir("bitrate");
+        let spec = CompositeStreamSpec {
+            cameras: vec![Output {
+                options: VideoPublishOptions {
+                    codec: "video/x-raw".into(),
+                    device_id: "test:video:zone-plate".into(),
+                    width: 640,
+                    height: 480,
+                    framerate: 30,
+                    local_file_save_options: None,
+                },
+                stream: false,
+            }],
+            output_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let target_kbps = spec.encoders.video_kbps_for(640, 480, 30);
+        gstreamer::init().unwrap();
+        let encoder = pick_h264_encoder(&spec.encoders).unwrap();
+        let paths = record(
+            &spec.validate_with_names(&HashMap::new()).unwrap(),
+            3,
+            false,
+        );
+
+        let path = &paths[&OutputId::Camera(1)];
+        let seconds = discover(path).duration().unwrap().mseconds() as f64 / 1000.0;
+        let bytes = std::fs::metadata(path).unwrap().len() as f64;
+        let kbps = bytes * 8.0 / 1000.0 / seconds;
+        let ratio = kbps / f64::from(target_kbps);
+        assert!(
+            (0.7..1.5).contains(&ratio),
+            "{encoder} delivered {kbps:.0} kbps for a {target_kbps} kbps target"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

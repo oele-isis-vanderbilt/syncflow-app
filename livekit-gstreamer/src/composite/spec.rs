@@ -86,7 +86,12 @@ pub enum H264Encoder {
 #[serde(rename_all = "camelCase")]
 pub struct EncoderOptions {
     pub h264: H264Encoder,
-    pub video_kbps: u32,
+    /// Video bitrate per pixel per frame; each file's bitrate is
+    /// `width × height × fps × video_bits_per_pixel`. 0.12 gives 8.7 Mbps at
+    /// 1552×1552@30 and 3.3 Mbps at 1280×720@30.
+    pub video_bits_per_pixel: f64,
+    /// A fixed video bitrate for every file instead, in kbps.
+    pub video_kbps: Option<u32>,
     pub aac_kbps_per_channel: u32,
 }
 
@@ -94,9 +99,26 @@ impl Default for EncoderOptions {
     fn default() -> Self {
         Self {
             h264: H264Encoder::Auto,
-            video_kbps: 3000,
+            video_bits_per_pixel: 0.12,
+            video_kbps: None,
             aac_kbps_per_channel: 128,
         }
+    }
+}
+
+/// Lowest video bitrate used, whatever the resolution.
+const MIN_VIDEO_KBPS: u32 = 500;
+
+impl EncoderOptions {
+    /// Video bitrate in kbps for one file of the given size and frame rate.
+    pub fn video_kbps_for(&self, width: i32, height: i32, framerate: i32) -> u32 {
+        if let Some(kbps) = self.video_kbps {
+            return kbps;
+        }
+        let pixels_per_second =
+            f64::from(width.max(0)) * f64::from(height.max(0)) * f64::from(framerate.max(0));
+        let kbps = (pixels_per_second * self.video_bits_per_pixel / 1000.0).round();
+        (kbps as u32).max(MIN_VIDEO_KBPS)
     }
 }
 
@@ -704,6 +726,20 @@ mod tests {
 
     fn output(spec: &ResolvedSpec, id: OutputId) -> &ResolvedOutput {
         spec.outputs.iter().find(|o| o.id == id).unwrap()
+    }
+
+    #[test]
+    fn video_bitrate_scales_with_resolution() {
+        let encoders = EncoderOptions::default();
+        assert_eq!(encoders.video_kbps_for(1552, 1552, 30), 8671);
+        assert_eq!(encoders.video_kbps_for(1280, 720, 30), 3318);
+        assert_eq!(encoders.video_kbps_for(1512, 982, 15), 2673);
+        assert_eq!(encoders.video_kbps_for(160, 120, 5), MIN_VIDEO_KBPS);
+        let fixed = EncoderOptions {
+            video_kbps: Some(2000),
+            ..Default::default()
+        };
+        assert_eq!(fixed.video_kbps_for(1920, 1080, 30), 2000);
     }
 
     #[test]
