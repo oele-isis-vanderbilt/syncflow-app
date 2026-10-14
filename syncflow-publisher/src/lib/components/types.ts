@@ -46,23 +46,12 @@ export interface RegistrationResponse {
     s3Endpoint: string;
 }
 
-export interface LocalFileSaveOptions {
-    outputDir: string;
-}
-
-export interface LocalSaveFileMetadata {
-    fileName: string;
-    codec: string;
-    startedAt: string;
-}
-
 export interface VideoPublishOptions {
     codec: string;
     deviceId: string;
     width: number;
     height: number;
     framerate: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface AudioPublishOptions {
@@ -71,7 +60,6 @@ export interface AudioPublishOptions {
     framerate: number;
     channels: number;
     selectedChannel?: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface ScreenPublishOptions {
@@ -80,7 +68,6 @@ export interface ScreenPublishOptions {
     width: number;
     height: number;
     framerate: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export type PublishOptions =

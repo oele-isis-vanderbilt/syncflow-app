@@ -405,7 +405,6 @@ mod tests {
             framerate: 48000,
             channels: 4,
             selected_channel,
-            local_file_save_options: None,
         }
     }
 
@@ -419,7 +418,6 @@ mod tests {
                     width: 1280,
                     height: 720,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 mics: vec![mic("usb-a", None), mic("usb-b", None)],
                 stream: true,

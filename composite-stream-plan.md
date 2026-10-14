@@ -477,7 +477,7 @@ For each event and each start error, it does two things.
 
 ## 11. Delivery
 
-**Status (2026-10-14):** steps 0–2 are implemented in `livekit-gstreamer/src/composite/` and `LKParticipant::publish_composite`/`publish_data`, verified on a MacBook with its camera and two USB mics. Step 3 is split in three: **backend** (done: both flows run on `CompositeStream`, readable folders `<YYYY-MM-DD_HH-MM>_<session>_<short-id>` with `-2`… on collision, manifest context, `can_publish_data`, failures forwarded to the UI and `ROOM_EVENTS`, upload when any file finalized; the room is joined before recording starts, and a failed join stops the session as before), **UI** (next; the backend still reads the per-device configs and converts them with `CompositeConfig::from_device_configs`), then **cleanup** (delete the old API).
+**Status (2026-10-14):** all steps are done on `unified-composite-pipelines`, verified on a MacBook with its camera and two USB mics. The library (`livekit-gstreamer/src/composite/`), the app backend (both flows on `CompositeStream`, readable folders, `ROOM_EVENTS`), the setup and stream UI (`composite_config.json`, per-row checks), and the cleanup (old per-device API, standalone pipelines and their examples removed). Video bitrate scales with resolution at 0.12 bits per pixel, with VideoToolbox at constant bitrate. Open: Windows/Linux hardware runs, and the parked clippy cleanup (5 remaining `-D warnings` errors in older code).
 
 
 Each PR builds on its own. Per CLAUDE.md, public API changes update the publisher in the same PR.

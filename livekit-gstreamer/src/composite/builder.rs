@@ -1142,7 +1142,6 @@ mod tests {
             framerate: 48000,
             channels,
             selected_channel,
-            local_file_save_options: None,
         }
     }
 
@@ -1156,7 +1155,6 @@ mod tests {
                     width: 320,
                     height: 240,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 mics: vec![
                     test_mic("test:audio:440", 4, Some(1)),
@@ -1171,7 +1169,6 @@ mod tests {
                     width: 640,
                     height: 360,
                     framerate: 15,
-                    local_file_save_options: None,
                 },
                 stream: false,
             }),
@@ -1278,7 +1275,6 @@ mod tests {
                     width: 320,
                     height: 240,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 mics,
                 stream: true,
@@ -1499,7 +1495,6 @@ mod tests {
                     width: 320,
                     height: 240,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 mics: vec![
                     test_mic("test:audio:440", 1, None),
@@ -1514,7 +1509,6 @@ mod tests {
                     width: 640,
                     height: 360,
                     framerate: 15,
-                    local_file_save_options: None,
                 },
                 stream: false,
             }),
@@ -1571,7 +1565,6 @@ mod tests {
                     width: 320,
                     height: 240,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 mics: vec![test_mic("test:audio:440", 1, None)],
                 stream: false,
@@ -1617,7 +1610,6 @@ mod tests {
                     width: 640,
                     height: 480,
                     framerate: 30,
-                    local_file_save_options: None,
                 },
                 stream: false,
             }],
@@ -1664,7 +1656,6 @@ mod tests {
             width: 320,
             height: 240,
             framerate: 30,
-            local_file_save_options: None,
         };
         CompositeStreamSpec {
             av_mix: Some(AvMixSpec {
@@ -1682,7 +1673,6 @@ mod tests {
                     width: 640,
                     height: 360,
                     framerate: 15,
-                    local_file_save_options: None,
                 },
                 stream: true,
             }),
@@ -1849,7 +1839,6 @@ mod tests {
             width: 320,
             height: 240,
             framerate: 30,
-            local_file_save_options: None,
         }
     }
 

@@ -448,8 +448,7 @@ impl<'a> Resolver<'a> {
 
     fn add_camera(&mut self, n: u8, options: &VideoPublishOptions) -> Result<RoleRef, SpecError> {
         self.claim_source(DeviceKind::Camera, &options.device_id, None)?;
-        let mut device_options = options.clone();
-        device_options.local_file_save_options = None;
+        let device_options = options.clone();
         let key = self.device_key(
             DeviceKind::Camera,
             &options.device_id,
@@ -461,8 +460,7 @@ impl<'a> Resolver<'a> {
 
     fn add_screen(&mut self, n: u8, options: &ScreenPublishOptions) -> Result<RoleRef, SpecError> {
         self.claim_source(DeviceKind::Screen, &options.screen_id_or_name, None)?;
-        let mut device_options = options.clone();
-        device_options.local_file_save_options = None;
+        let device_options = options.clone();
         let key = self.device_key(
             DeviceKind::Screen,
             &options.screen_id_or_name,
@@ -494,7 +492,6 @@ impl<'a> Resolver<'a> {
         // The device is opened once with all its channels; roles pick their channel.
         let mut device_options = options.clone();
         device_options.selected_channel = None;
-        device_options.local_file_save_options = None;
         let key = self.device_key(
             DeviceKind::Mic,
             &options.device_id,
@@ -652,7 +649,6 @@ mod tests {
             width: 1280,
             height: 720,
             framerate: 30,
-            local_file_save_options: None,
         }
     }
 
@@ -663,7 +659,6 @@ mod tests {
             framerate: 48000,
             channels,
             selected_channel,
-            local_file_save_options: None,
         }
     }
 
@@ -674,7 +669,6 @@ mod tests {
             width: 1920,
             height: 1080,
             framerate: 15,
-            local_file_save_options: None,
         }
     }
 

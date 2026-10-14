@@ -33,7 +33,6 @@ fn camera(prefix: &str, id: String) -> VideoPublishOptions {
         width: num(&format!("{prefix}_WIDTH"), 1280),
         height: num(&format!("{prefix}_HEIGHT"), 720),
         framerate: num(&format!("{prefix}_FPS"), 30),
-        local_file_save_options: None,
     }
 }
 
@@ -44,7 +43,6 @@ fn mic(prefix: &str, id: String) -> AudioPublishOptions {
         framerate: num("MIC_RATE", 48000),
         channels: num(&format!("{prefix}_CHANNELS"), 1),
         selected_channel: var(&format!("{prefix}_CHANNEL")).and_then(|v| v.parse().ok()),
-        local_file_save_options: None,
     }
 }
 
@@ -65,7 +63,6 @@ pub fn spec_from_env(output_dir: Option<PathBuf>) -> CompositeStreamSpec {
             width: num("SCREEN_WIDTH", 1920),
             height: num("SCREEN_HEIGHT", 1080),
             framerate: num("SCREEN_FPS", 15),
-            local_file_save_options: None,
         },
         stream: flag("STREAM_SCREEN"),
     });
