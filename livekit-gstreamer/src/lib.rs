@@ -1,4 +1,5 @@
 pub mod av_mix_stream;
+pub mod composite;
 pub mod devices;
 pub mod lk_participant;
 pub mod media_device;

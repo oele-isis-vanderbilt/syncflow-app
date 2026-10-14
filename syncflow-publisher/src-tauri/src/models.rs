@@ -1,4 +1,7 @@
-use livekit_gstreamer::PublishOptions;
+use livekit_gstreamer::composite::{AvMixSpec, CompositeStreamSpec, Output};
+use livekit_gstreamer::{
+    AudioPublishOptions, PublishOptions, ScreenPublishOptions, VideoPublishOptions,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -33,6 +36,73 @@ pub enum AvMixMode {
     Primary, // Main video source
     Mic1,    // Primary audio
     Mic2,    // Secondary audio
+}
+
+// The composite config replaces `DeviceRecordingAndStreamingConfig` and `AvMixMode`
+// when the app switches to `CompositeStream` (composite-stream-plan.md §10). Unused until then.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvMixConfig {
+    pub camera: VideoPublishOptions,
+    pub mic_1: AudioPublishOptions,
+    pub mic_2: Option<AudioPublishOptions>,
+    pub stream: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputConfig<T> {
+    pub options: T,
+    pub stream: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositeConfig {
+    pub av_mix: Option<AvMixConfig>,
+    pub screen: Option<OutputConfig<ScreenPublishOptions>>,
+    #[serde(default)]
+    pub cameras: Vec<OutputConfig<VideoPublishOptions>>,
+    #[serde(default)]
+    pub mics: Vec<OutputConfig<AudioPublishOptions>>,
+    pub recording_mode: RecordingMode,
+}
+
+#[allow(dead_code)]
+impl CompositeConfig {
+    pub fn to_stream_spec(
+        &self,
+        output_dir: PathBuf,
+        manifest_context: serde_json::Value,
+    ) -> CompositeStreamSpec {
+        fn output<T: Clone>(config: &OutputConfig<T>) -> Output<T> {
+            Output {
+                options: config.options.clone(),
+                stream: config.stream,
+            }
+        }
+
+        CompositeStreamSpec {
+            av_mix: self.av_mix.as_ref().map(|mix| AvMixSpec {
+                camera: mix.camera.clone(),
+                mics: std::iter::once(mix.mic_1.clone())
+                    .chain(mix.mic_2.clone())
+                    .collect(),
+                stream: mix.stream,
+            }),
+            screen: self.screen.as_ref().map(output),
+            cameras: self.cameras.iter().map(output).collect(),
+            mics: self.mics.iter().map(output).collect(),
+            output_dir: Some(output_dir),
+            stream_audio: Default::default(),
+            encoders: Default::default(),
+            start_policy: Default::default(),
+            manifest_context: Some(manifest_context),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,6 +2,7 @@
 mod devices;
 mod errors;
 mod models;
+pub mod pipeline_events;
 mod register;
 mod s3_uploader;
 mod session_listener;

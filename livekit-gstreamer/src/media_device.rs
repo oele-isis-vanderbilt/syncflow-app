@@ -1775,7 +1775,7 @@ impl GstMediaDevice {
     }
 
     #[cfg(target_os = "windows")]
-    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+    pub(crate) fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
         let (_, idx) = get_monitor(&self.device_path)
             .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
 
@@ -1799,7 +1799,7 @@ impl GstMediaDevice {
     }
 
     #[cfg(target_os = "macos")]
-    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+    pub(crate) fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
         let monitor = get_monitor(&self.device_path).ok_or_else(|| {
             GStreamerError::DeviceError(format!("No screen found {}", self.device_path))
         })?;
@@ -1828,7 +1828,7 @@ impl GstMediaDevice {
     }
 
     #[cfg(target_os = "linux")]
-    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+    pub(crate) fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
         let monitor = get_monitor(&self.device_path)
             .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
 
