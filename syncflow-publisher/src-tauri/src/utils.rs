@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::errors::SyncFlowPublisherError;
 
@@ -10,20 +10,17 @@ pub fn get_ip_address() -> Option<String> {
     local_ip_address::local_ip().ok().map(|ip| ip.to_string())
 }
 
-pub fn save_json(
-    data: &impl serde::Serialize,
-    path: &PathBuf,
-) -> Result<(), SyncFlowPublisherError> {
-    let file = std::fs::File::create(path).map_err(|e| SyncFlowPublisherError::IoError(e))?;
-    serde_json::to_writer(file, data).map_err(|e| SyncFlowPublisherError::JsonError(e))?;
+pub fn save_json(data: &impl serde::Serialize, path: &Path) -> Result<(), SyncFlowPublisherError> {
+    let file = std::fs::File::create(path)?;
+    serde_json::to_writer(file, data)?;
     Ok(())
 }
 
 pub fn load_json<T: serde::de::DeserializeOwned>(
-    file_loc: &PathBuf,
+    file_loc: &Path,
 ) -> Result<T, SyncFlowPublisherError> {
     let file = std::fs::File::open(file_loc)?;
-    serde_json::from_reader(file).map_err(|e| SyncFlowPublisherError::JsonError(e))
+    Ok(serde_json::from_reader(file)?)
 }
 
 /// Session names in folder names are cut to this many characters.
@@ -52,7 +49,7 @@ pub fn short_session_id(session_id: &str) -> String {
 
 /// `parent/folder`, or `parent/folder-2`, `-3`, … if it already exists, so a recording
 /// never lands in another recording's folder.
-pub fn unique_recording_dir(parent: &std::path::Path, folder: &str) -> PathBuf {
+pub fn unique_recording_dir(parent: &Path, folder: &str) -> PathBuf {
     let candidate = parent.join(folder);
     if !candidate.exists() {
         return candidate;

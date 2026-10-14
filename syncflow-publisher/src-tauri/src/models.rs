@@ -142,9 +142,7 @@ impl From<S3Config> for rusoto_s3::S3Client {
             value.s3_secret_key.to_string(),
         );
 
-        let s3_client = rusoto_s3::S3Client::new_with(client, credentials_provider, region);
-
-        s3_client
+        rusoto_s3::S3Client::new_with(client, credentials_provider, region)
     }
 }
 
@@ -153,7 +151,6 @@ pub struct ActiveSession {
     pub session_id: String,
     pub session_name: String,
     pub cancel_token: CancellationToken,
-    pub task_handle: tauri::async_runtime::JoinHandle<()>,
 }
 
 pub struct AppState {

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use amqprs::{
     channel::{BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments},
@@ -65,7 +65,7 @@ pub enum SessionListenerStatus {
 }
 
 pub async fn initialize_session_listener(
-    app_dir: &PathBuf,
+    app_dir: &Path,
     app_handle: tauri::AppHandle,
 ) -> Option<SessionListener> {
     let credentials = load_json::<RegisterCredentials>(&app_dir.join("credentials.json")).ok()?;
@@ -93,14 +93,20 @@ pub async fn initialize_session_listener(
     Some(listener)
 }
 
-pub(crate) struct SessionListener {
-    pub rabbitmq_host: String,
-    pub rabbitmq_port: u16,
-    pub rabbitmq_username: String,
-    pub rabbitmq_password: String,
-    pub rabbitmq_vhost: String,
+/// Where and how to listen for session notifications.
+#[derive(Debug, Clone)]
+pub(crate) struct RabbitMqConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub vhost: String,
     pub exchange_name: String,
     pub binding_key: String,
+}
+
+pub(crate) struct SessionListener {
+    pub config: RabbitMqConfig,
     pub status: SessionListenerStatus,
     pub rmq_task_handle: Option<RMQTaskHandle>,
 }
@@ -116,13 +122,15 @@ impl SessionListener {
         binding_key: &str,
     ) -> Self {
         SessionListener {
-            rabbitmq_host: rabbitmq_host.to_string(),
-            rabbitmq_port,
-            rabbitmq_username: rabbitmq_username.to_string(),
-            rabbitmq_password: rabbitmq_password.to_string(),
-            exchange_name: exchange_name.to_string(),
-            rabbitmq_vhost: rabbitmq_vhost.to_string(),
-            binding_key: binding_key.to_string(),
+            config: RabbitMqConfig {
+                host: rabbitmq_host.to_string(),
+                port: rabbitmq_port,
+                username: rabbitmq_username.to_string(),
+                password: rabbitmq_password.to_string(),
+                vhost: rabbitmq_vhost.to_string(),
+                exchange_name: exchange_name.to_string(),
+                binding_key: binding_key.to_string(),
+            },
             status: SessionListenerStatus::Idle,
             rmq_task_handle: None,
         }
@@ -139,33 +147,15 @@ impl SessionListener {
         let (tx, _) = tokio::sync::broadcast::channel::<ClonableNewSessionMessage>(100);
         let tx_clone = tx.clone();
 
-        let rabbitmq_host = self.rabbitmq_host.clone();
-        let rabbitmq_port = self.rabbitmq_port;
-        let rabbitmq_username = self.rabbitmq_username.clone();
-        let rabbitmq_password = self.rabbitmq_password.clone();
-        let rabbitmq_vhost = self.rabbitmq_vhost.clone();
-        let exchange_name = self.exchange_name.clone();
-        let binding_key = self.binding_key.clone();
-
+        let config = self.config.clone();
         let task = tokio::spawn(async move {
-            Self::run_forever(
-                rabbitmq_host,
-                rabbitmq_port,
-                rabbitmq_username,
-                rabbitmq_password,
-                rabbitmq_vhost,
-                exchange_name,
-                binding_key,
-                tx_clone,
-                cancel_child,
-            )
-            .await;
+            Self::run_forever(config, tx_clone, cancel_child).await;
         });
 
         self.rmq_task_handle = Some(RMQTaskHandle {
             task,
             session_tx: tx,
-            cancel: cancel,
+            cancel,
         });
         self.status = SessionListenerStatus::Active;
 
@@ -190,14 +180,6 @@ impl SessionListener {
         self.status = SessionListenerStatus::Idle;
         println!("SessionListener is now idle");
         Ok(())
-    }
-
-    pub fn is_active(&self) -> bool {
-        matches!(self.status, SessionListenerStatus::Active)
-    }
-
-    pub fn is_idle(&self) -> bool {
-        matches!(self.status, SessionListenerStatus::Idle)
     }
 
     pub fn subscribe(
@@ -249,22 +231,6 @@ impl SessionListener {
 
         Ok(())
     }
-
-    pub fn receiver_count(&self) -> usize {
-        if let Some(handle) = &self.rmq_task_handle {
-            handle.session_tx.receiver_count()
-        } else {
-            0
-        }
-    }
-
-    pub fn is_task_running(&self) -> bool {
-        if let Some(handle) = &self.rmq_task_handle {
-            !handle.task.is_finished()
-        } else {
-            false
-        }
-    }
 }
 
 impl SessionListener {
@@ -289,13 +255,7 @@ impl SessionListener {
 
 impl SessionListener {
     async fn run_forever(
-        rabbitmq_host: String,
-        rabbitmq_port: u16,
-        rabbitmq_username: String,
-        rabbitmq_password: String,
-        rabbitmq_vhost: String,
-        exchange_name: String,
-        binding_key: String,
+        config: RabbitMqConfig,
         tx_clone: tokio::sync::broadcast::Sender<ClonableNewSessionMessage>,
         cancel: CancellationToken,
     ) {
@@ -306,19 +266,7 @@ impl SessionListener {
                 break;
             }
 
-            match Self::run_once(
-                &rabbitmq_host,
-                rabbitmq_port,
-                &rabbitmq_username,
-                &rabbitmq_password,
-                &rabbitmq_vhost,
-                &exchange_name,
-                &binding_key,
-                tx_clone.clone(),
-                cancel.clone(),
-            )
-            .await
-            {
+            match Self::run_once(&config, tx_clone.clone(), cancel.clone()).await {
                 Ok(ConsumerExit::CancelledByUser) => {
                     println!("Consumer stopped by cancel signal.");
                     break;
@@ -339,18 +287,21 @@ impl SessionListener {
     }
 
     async fn run_once(
-        host: &str,
-        port: u16,
-        username: &str,
-        password: &str,
-        vhost: &str,
-        exchange_name: &str,
-        binding_key: &str,
+        config: &RabbitMqConfig,
         tx_clone: tokio::sync::broadcast::Sender<ClonableNewSessionMessage>,
         cancel_rx: CancellationToken,
     ) -> Result<ConsumerExit, SyncFlowPublisherError> {
+        let RabbitMqConfig {
+            host,
+            port,
+            username,
+            password,
+            vhost,
+            exchange_name,
+            binding_key,
+        } = config;
         let connection =
-            Self::create_connection_with_heartbeat(host, port, username, password, vhost, 30)
+            Self::create_connection_with_heartbeat(host, *port, username, password, vhost, 30)
                 .await?;
 
         let channel = connection.open_channel(None).await?;

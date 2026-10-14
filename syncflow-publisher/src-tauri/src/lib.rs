@@ -69,7 +69,7 @@ async fn exit_session(
     app_state: tauri::State<'_, models::AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), SyncFlowPublisherError> {
-    let mut active_sessions = app_state.active_sessions.lock().await;
+    let active_sessions = app_state.active_sessions.lock().await;
 
     if let Some(session) = active_sessions.get(&session_id) {
         session.cancel_token.cancel();
@@ -152,12 +152,12 @@ async fn rejoin_session(
             session_name: session_name.clone(),
         };
         let cloned_app_handle = app_handle.clone();
-        let task = tauri::async_runtime::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             record_publish_to_syncflow_with_cancellation(
                 format!(
                     "{}-{}({})",
                     registration_details.device_name.replace(" ", "-"),
-                    registration_details.device_id[..8].to_string(),
+                    &registration_details.device_id[..8],
                     registration_details.device_group,
                 ),
                 new_session,
@@ -184,7 +184,6 @@ async fn rejoin_session(
                 session_id: session_id.clone(),
                 session_name: session_name_clone,
                 cancel_token,
-                task_handle: task,
             },
         );
         drop(active_sessions_guard);
@@ -221,11 +220,6 @@ async fn get_active_sessions(
 async fn get_all_sessions(
     app_state: tauri::State<'_, models::AppState>,
 ) -> Result<Vec<(String, String, bool)>, SyncFlowPublisherError> {
-    // Get active sessions from memory
-    let active_sessions = app_state.active_sessions.lock().await;
-    let active_session_ids: std::collections::HashSet<String> =
-        active_sessions.keys().cloned().collect();
-
     // Get all sessions from syncflow client
     let all_sessions = if let Some(client) = {
         let client_guard = app_state.client.lock().unwrap();
@@ -321,7 +315,7 @@ async fn start_local_recording(
     let session_id = format!("local-{}", system_time_nanos());
     let session_id_clone = session_id.clone();
 
-    let task = tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         local_recording_only(
             session_id_clone,
             session_name_clone,
@@ -337,9 +331,8 @@ async fn start_local_recording(
 
     let active_session = ActiveSession {
         session_id: session_id.clone(),
-        session_name: session_name,
+        session_name,
         cancel_token,
-        task_handle: task,
     };
 
     *local_recording_guard = Some(active_session);
@@ -495,7 +488,7 @@ pub fn run() {
                         let session_id_for_cleanup = session_id.clone();
                         let handle_for_task = handle.clone();
 
-                        let task = tauri::async_runtime::spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             if let (
                                 Some(devices_config),
                                 Some(registration_details),
@@ -506,7 +499,7 @@ pub fn run() {
                                     format!(
                                         "{}-{}({})",
                                         registration_details.device_name.replace(" ", "-"),
-                                        registration_details.device_id[..8].to_string(),
+                                        &registration_details.device_id[..8],
                                         registration_details.device_group,
                                     ),
                                     new_session.into(),
@@ -535,7 +528,6 @@ pub fn run() {
                                 session_id: session_id.clone(),
                                 session_name: session_name.clone(),
                                 cancel_token,
-                                task_handle: task,
                             },
                         );
                         drop(active_sessions_guard);
@@ -621,7 +613,6 @@ pub fn run() {
                             session_id: session.id.clone(),
                             session_name: session.name.clone(),
                             cancel_token: CancellationToken::new(),
-                            task_handle: tauri::async_runtime::spawn(async {}),
                         },
                     );
                 }

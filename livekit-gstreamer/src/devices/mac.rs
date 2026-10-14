@@ -1,5 +1,4 @@
 use once_cell::sync::Lazy;
-use serde::de;
 use std::sync::{Arc, Mutex};
 
 use display_info::DisplayInfo;
@@ -18,8 +17,6 @@ static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     }
     Arc::new(Mutex::new(monitor))
 });
-
-const SUPPORTED_APIS: [&str; 1] = ["avf"];
 
 pub fn parse_monitors_mac() -> Vec<MediaDeviceInfo> {
     let all_monitors = DisplayInfo::all().unwrap_or_else(|_| vec![]);
@@ -231,15 +228,6 @@ fn get_device_class(device: &Device) -> String {
     }
 }
 
-fn confirm_supported_api(device: &Device) -> Option<bool> {
-    let api = device
-        .properties()
-        .and_then(|props| props.get::<String>("device.api").ok())
-        .unwrap_or_default();
-    // SUPPORTED_APIS.contains(&api.as_str()).then_some(true)
-    Some(true)
-}
-
 pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
@@ -249,7 +237,8 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let mut devices = devices
         .into_iter()
         .filter_map(|d| {
-            confirm_supported_api(&d)?;
+            // Unlike Linux and Windows, no device-API filter: cameras report
+            // `device.api = avf`, but microphones report no API at all.
             let path = get_device_path(&d)?;
             let caps = get_device_capabilities(&d);
             let display_name = d.display_name().into();
