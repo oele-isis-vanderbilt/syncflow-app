@@ -2,13 +2,13 @@
 
 A client app for sharing media (screen, camera, microphone) into sessions of a single SyncFlow project. It's a Cargo workspace (root `Cargo.toml`) built from two crates:
 
-- **`livekit-gstreamer`:** platform-specific device discovery, and GStreamer pipelines (using the Rust bindings) that can record locally and stream to SyncFlow, using tee elements and appsinks that publish to LiveKit.
+- **`livekit-gstreamer`:** platform-specific device discovery, and one composite GStreamer pipeline (using the Rust bindings) that drives every configured device on one clock, records each to its own file and streams selected outputs to LiveKit through identified appsinks. Design and scenarios: `composite-stream-plan.md`.
 - **`syncflow-publisher`:** the Tauri app (SvelteKit frontend) that uses `livekit-gstreamer` to build the client for the SyncFlow project. It provides session listening (via RabbitMQ), along with other features that let end users connect their devices to SyncFlow sessions to record locally and/or stream.
 
 Works in two modes:
 
-- **Offline mode:** a local recorder that records multimedia files from connected devices. `local_recording_only` currently uploads to S3 when `s3_credentials.json` exists and a device has `enable_streaming` set.
-- **Listen mode:** multiple devices, each with codecs in a pre-configured pipeline, wait for a SyncFlow session to start and join it. Each can stream to LiveKit, record, or both (you can record a session without streaming). When the session ends, they exit and upload the recorded media to a pre-configured S3 bucket. RabbitMQ powers session listening (start/stop events for the project's sessions).
+- **Offline mode:** a local recorder that records multimedia files from connected devices. `local_recording_only` currently uploads to S3 when `s3_credentials.json` exists and some output has streaming on.
+- **Listen mode:** the configured devices wait for a SyncFlow session to start and join it. Every output is recorded, and each can also stream to LiveKit (you can record a session without streaming). Device failures are isolated and reported to the UI and to the room on the `ROOM_EVENTS` data topic. When the session ends, they exit and upload the recorded media to a pre-configured S3 bucket. RabbitMQ powers session listening (start/stop events for the project's sessions).
 
 ## Terms
 - **SyncFlow**: a platform for collecting multimodal learning-analytics data in real time, built on LiveKit (WebRTC). This app talks to it through the `client` and `shared` crates from the SyncFlow repository (imported as `syncflow_client` and `syncflow_shared`).
@@ -24,15 +24,18 @@ Works in two modes:
 ├── livekit-gstreamer/
 │   ├── src/
 │   │   ├── devices/           # per-OS device discovery (linux.rs, mac.rs, win.rs) behind one API in mod.rs
-│   │   ├── media_device.rs    # device/caps model and pipeline element selection (largest file)
-│   │   ├── media_stream.rs    # single-device pipeline: tee -> local file and/or appsink -> LiveKit
-│   │   ├── av_mix_stream.rs   # combined audio+video stream
-│   │   └── lk_participant.rs  # publishing tracks to a LiveKit room
-│   └── examples/              # runnable examples; most need LiveKit/SyncFlow creds in .env
+│   │   ├── composite/         # the pipeline: spec (validation), builder (graph layers), bus (error
+│   │   │                      #   isolation), stream (CompositeStream), manifest, ids/tags/naming
+│   │   ├── media_device.rs    # device lookup, capabilities, format checks, per-OS screen source
+│   │   ├── publish_options.rs # Video/Audio/ScreenPublishOptions (the format a device is asked for)
+│   │   └── lk_participant.rs  # publishing a composite stream's appsinks and data messages to LiveKit
+│   └── examples/              # get_devices, stream_composite, lk_publish_composite, lk_listen_data;
+│                              #   devices come from .env (examples/helper/composite_env.rs)
 └── syncflow-publisher/
     ├── src/                   # SvelteKit frontend
-    │   ├── routes/            # / (device + mode setup), /register, /stream (sessions, local recording)
-    │   └── lib/               # components/ and store.svelte.ts (shared runes state)
+    │   ├── routes/            # / (recording setup + mode), /register, /stream (sessions, local recording)
+    │   └── lib/               # components/, store.svelte.ts (shared runes state), compositeConfig.ts
+    │                          #   (setup draft and checks), publishOptions.ts, notifications.ts
     ├── docs/design-rules.md   # full UI design guide
     ├── scripts/check-design.mjs # design-token checker (`pnpm check:design`)
     └── src-tauri/src/
@@ -40,6 +43,7 @@ Works in two modes:
         ├── register.rs        # device registration/deregistration with SyncFlow
         ├── session_listener.rs# RabbitMQ listener for session start/stop
         ├── syncflow_publisher.rs # per-session record/stream flow, output dirs, S3 upload trigger
+        ├── pipeline_events.rs # pipeline events -> UI notifications and ROOM_EVENTS messages
         ├── s3_uploader.rs     # zip + multipart upload (rusoto)
         ├── devices.rs, models.rs, errors.rs, utils.rs
 ```
@@ -55,8 +59,8 @@ Everything lives in `~/.syncflow-publisher/`:
 
 - `credentials.json`: SyncFlow API key/secret and RabbitMQ password (plaintext).
 - `s3_credentials.json`: S3 access/secret key (plaintext).
-- `registration.json`, `recording_mode.json`, streaming config.
-- `recordings/<session_id>-<session_name>-<participant>/`: recordings, zipped next to the folder before upload. Offline sessions use `local-<nanos>` as the session id.
+- `registration.json`, `recording_mode.json`, `composite_config.json` (the recording setup).
+- `recordings/<YYYY-MM-DD_HH-MM>_<session>_<short-id>/` (`-2`, `-3`… on collision): recordings and `manifest.json`, zipped next to the folder before upload. Offline sessions end in `_local` and use `local-<nanos>` as the session id.
 
 Rules:
 - Never log, print, or emit the contents of the credential files, and never commit sample files with real values.
@@ -70,13 +74,15 @@ Run Rust commands from the repo root (workspace):
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo test --workspace   # very few tests yet; examples are the real checks
+cargo test --workspace   # composite pipeline tests run on live test sources (test-sources feature)
 ```
 
 ### livekit-gstreamer
 Assumes GStreamer and its development files are already installed on the system. Packaging GStreamer is planned; don't try to bundle or vendor it unless asked. Required: GStreamer Full Installation. Uses tokio and the LiveKit Rust SDK to provide streaming/recording capabilities as tasks.
 
-Examples: `cargo run -p livekit-gstreamer --example get_devices`. Most other examples need LiveKit/SyncFlow credentials in a `.env` (loaded with `dotenvy`).
+Examples: `cargo run -p livekit-gstreamer --example get_devices` lists device ids and formats; put the ones to use in `.env` (quote values with spaces) for `stream_composite`. The LiveKit examples also need `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` there.
+
+Tests use `test:` device ids (`test:video`, `test:audio:<hz>`, `test:tones:<hz>:…`, `test:zero-ts:<hz>`, `test:missing`) that map to live test sources; they are on in unit tests and behind the `test-sources` feature elsewhere.
 
 ### syncflow-publisher
 SvelteKit 3 + Svelte 5 (runes, ≥5.57), Vite 8, TypeScript 6, `@sveltejs/adapter-static` 4, Tailwind CSS 4.3 + `flowbite-svelte` 1.x for UI, with Tauri v2. Requires Node ≥22.17. Use runes only; don't use legacy `$:` or stores syntax in new code.

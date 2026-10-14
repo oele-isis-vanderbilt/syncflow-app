@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::vec;
+use std::path::{Path, PathBuf};
 
 use livekit_gstreamer::get_devices_info;
 use livekit_gstreamer::GstMediaDevice;
@@ -9,7 +8,7 @@ use livekit_gstreamer::PublishOptions;
 
 use crate::errors::SyncFlowPublisherError;
 use crate::models;
-use crate::models::DeviceRecordingAndStreamingConfig;
+use crate::models::{CompositeConfig, RecordingMode};
 use crate::session_listener::initialize_session_listener;
 use crate::utils::save_json;
 
@@ -109,44 +108,57 @@ pub fn get_devices() -> Vec<MediaDeviceInfo> {
         .collect()
 }
 
-#[tauri::command(async)]
-pub async fn set_streaming_config(
-    configs: Vec<DeviceRecordingAndStreamingConfig>,
-    app_state: tauri::State<'_, models::AppState>,
-    app_handle: tauri::AppHandle,
-) -> Result<Vec<DeviceRecordingAndStreamingConfig>, SyncFlowPublisherError> {
-    let device_exists_and_supports_codec =
-        |option: &PublishOptions| -> Result<bool, SyncFlowPublisherError> {
-            verify_device_exists_and_supports_codec(option)
-        };
+const CONFIG_FILE: &str = "composite_config.json";
 
-    let mut all_errors = vec![];
-
-    for config in &configs {
-        let supports_codec = device_exists_and_supports_codec(&config.publish_options);
-        if let Err(e) = supports_codec {
-            all_errors.push(e.to_string());
+/// Checks every device of `config`: it exists and supports the requested format, and the
+/// combination is valid (no device or channel used twice, an AV mix with a camera and
+/// mic 1, shared interfaces at one format).
+fn verify_config(config: &CompositeConfig) -> Result<(), SyncFlowPublisherError> {
+    let mut errors = Vec::new();
+    for option in config.publish_options() {
+        match verify_device_exists_and_supports_codec(&option) {
+            Ok(true) => {}
+            Ok(false) => errors.push(format!(
+                "{} does not support the selected format",
+                device_id(&option)
+            )),
+            Err(e) => errors.push(e.to_string()),
         }
     }
-
-    if !all_errors.is_empty() {
-        return Err(SyncFlowPublisherError::ConfigError(all_errors.join(", ")));
+    let spec = config.to_stream_spec(PathBuf::new(), serde_json::Value::Null);
+    if let Err(e) = spec.validate() {
+        errors.push(e.to_string());
     }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(SyncFlowPublisherError::ConfigError(errors.join(", ")))
+    }
+}
 
-    save_json(&configs, &app_state.app_dir.join("selected_devices.json"))?;
+fn device_id(option: &PublishOptions) -> &str {
+    match option {
+        PublishOptions::Audio(details) => &details.device_id,
+        PublishOptions::Video(details) => &details.device_id,
+        PublishOptions::Screen(details) => &details.screen_id_or_name,
+    }
+}
+
+#[tauri::command(async)]
+pub async fn set_streaming_config(
+    config: CompositeConfig,
+    app_state: tauri::State<'_, models::AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<CompositeConfig, SyncFlowPublisherError> {
+    verify_config(&config)?;
+    save_json(&config, &app_state.app_dir.join(CONFIG_FILE))?;
     {
         let mut guard = app_state.recording_and_streaming_config.lock().unwrap();
-        *guard = Some(configs.clone());
+        *guard = Some(config.clone());
     }
 
     // Only initialize session listener for session mode
-    let is_session_mode = configs.iter().any(|config| {
-        matches!(
-            config.recording_mode,
-            crate::models::RecordingMode::SessionMode
-        )
-    });
-    if is_session_mode {
+    if config.recording_mode == RecordingMode::SessionMode {
         let mut session_listener_guard = app_state.session_listener.lock().await;
         if session_listener_guard.is_none() {
             let listener = initialize_session_listener(&app_state.app_dir, app_handle.clone())
@@ -158,45 +170,32 @@ pub async fn set_streaming_config(
         }
     }
 
-    Ok(configs)
+    Ok(config)
 }
 
-pub fn initialize_streaming_config(
-    app_dir: &PathBuf,
-) -> Option<Vec<DeviceRecordingAndStreamingConfig>> {
-    let config_file = app_dir.join("selected_devices.json");
-    if config_file.exists() {
-        let config_str = std::fs::read_to_string(&config_file).ok()?;
-        let configs: Vec<DeviceRecordingAndStreamingConfig> =
-            serde_json::from_str(&config_str).ok()?;
-        configs
-            .iter()
-            .all(|config| verify_device_exists_and_supports_codec(&config.publish_options).is_ok())
-            .then_some(configs)
-    } else {
-        None
-    }
+/// Loads the saved config if every device in it is still usable. A config saved by an
+/// older version (`selected_devices.json`) is not read: devices are configured again.
+pub fn initialize_streaming_config(app_dir: &Path) -> Option<CompositeConfig> {
+    let config_str = std::fs::read_to_string(app_dir.join(CONFIG_FILE)).ok()?;
+    let config: CompositeConfig = serde_json::from_str(&config_str).ok()?;
+    verify_config(&config).is_ok().then_some(config)
 }
 
 #[tauri::command]
 pub fn get_streaming_config(
     app_state: tauri::State<'_, models::AppState>,
-) -> Result<Vec<DeviceRecordingAndStreamingConfig>, SyncFlowPublisherError> {
+) -> Result<CompositeConfig, SyncFlowPublisherError> {
     let guard = app_state.recording_and_streaming_config.lock().unwrap();
-    if let Some(configs) = &*guard {
-        Ok(configs.clone())
-    } else {
-        Err(SyncFlowPublisherError::NotIntialized(
-            "Streaming config not initialized".to_string(),
-        ))
-    }
+    guard.clone().ok_or_else(|| {
+        SyncFlowPublisherError::NotIntialized("Streaming config not initialized".to_string())
+    })
 }
 
 #[tauri::command(async)]
 pub async fn delete_streaming_config(
     app_state: tauri::State<'_, models::AppState>,
 ) -> Result<(), SyncFlowPublisherError> {
-    let config_file = app_state.app_dir.join("selected_devices.json");
+    let config_file = app_state.app_dir.join(CONFIG_FILE);
     if config_file.exists() {
         std::fs::remove_file(config_file)?;
     }
@@ -215,4 +214,19 @@ pub async fn delete_streaming_config(
     }
 
     Ok(())
+}
+
+/// What the recording pipeline can do on this machine.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineCapabilities {
+    /// Whether streamed audio can be noise suppressed (`audiornnoise` is installed).
+    noise_suppression: bool,
+}
+
+#[tauri::command]
+pub fn get_pipeline_capabilities() -> PipelineCapabilities {
+    PipelineCapabilities {
+        noise_suppression: livekit_gstreamer::composite::builder::rnnoise_available(),
+    }
 }

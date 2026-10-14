@@ -1,31 +1,26 @@
-import { redirect } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
 import { invoke } from '@tauri-apps/api/core';
-import type { RegistrationResponse, MediaDeviceInfo } from '#lib/components/types.js';
+import type {
+    MediaDeviceInfo,
+    PipelineCapabilities,
+    RegistrationResponse,
+} from '#lib/components/types.js';
 import { goto } from '$app/navigation';
 
 export const load: PageLoad = async () => {
     try {
-        const _ = await invoke('get_streaming_config');
+        await invoke('get_streaming_config');
         goto('/stream');
-    } catch (error) {
-        console.log('No streaming config found');
+    } catch {
+        // No saved setup: configure one here.
     }
 
-    let devices: MediaDeviceInfo[] = [];
-
-    try {
-        const registration: RegistrationResponse = await invoke('get_registration');
-        devices = await invoke('get_devices');
-        return {
-            registration,
-            devices,
-        };
-    } catch (error) {
-        console.log('No registration found, redirecting to register page.', error);
-        return {
-            registration: null,
-            devices,
-        };
-    }
+    // Devices are needed in local mode too, so they load whether or not this machine is
+    // registered.
+    const [registration, devices, capabilities] = await Promise.all([
+        invoke<RegistrationResponse>('get_registration').catch(() => null),
+        invoke<MediaDeviceInfo[]>('get_devices').catch(() => [] as MediaDeviceInfo[]),
+        invoke<PipelineCapabilities>('get_pipeline_capabilities').catch(() => null),
+    ]);
+    return { registration, devices, capabilities };
 };

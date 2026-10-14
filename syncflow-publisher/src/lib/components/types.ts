@@ -46,23 +46,12 @@ export interface RegistrationResponse {
     s3Endpoint: string;
 }
 
-export interface LocalFileSaveOptions {
-    outputDir: string;
-}
-
-export interface LocalSaveFileMetadata {
-    fileName: string;
-    codec: string;
-    startedAt: string;
-}
-
 export interface VideoPublishOptions {
     codec: string;
     deviceId: string;
     width: number;
     height: number;
     framerate: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface AudioPublishOptions {
@@ -71,7 +60,6 @@ export interface AudioPublishOptions {
     framerate: number;
     channels: number;
     selectedChannel?: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export interface ScreenPublishOptions {
@@ -80,7 +68,6 @@ export interface ScreenPublishOptions {
     width: number;
     height: number;
     framerate: number;
-    localFileSaveOptions?: LocalFileSaveOptions;
 }
 
 export type PublishOptions =
@@ -88,14 +75,32 @@ export type PublishOptions =
     | ({ kind: 'Audio' } & AudioPublishOptions)
     | ({ kind: 'Screen' } & ScreenPublishOptions);
 
-export interface DeviceRecordingAndStreamingConfig {
-    enableStreaming: boolean;
-    publishOptions: PublishOptions;
-    avMixMode?: AvMixMode;
+/** One file and its optional stream. */
+export interface OutputConfig<T> {
+    options: T;
+    stream: boolean;
+}
+
+/** Camera plus one or two mics, recorded to av-mix.mp4 with mic 1 on L and mic 2 on R. */
+export interface AvMixConfig {
+    camera: VideoPublishOptions;
+    mic1: AudioPublishOptions;
+    mic2: AudioPublishOptions | null;
+    stream: boolean;
+}
+
+/** What one recording contains; saved by `set_streaming_config`. */
+export interface CompositeConfig {
+    avMix: AvMixConfig | null;
+    screen: OutputConfig<ScreenPublishOptions> | null;
+    cameras: OutputConfig<VideoPublishOptions>[];
+    mics: OutputConfig<AudioPublishOptions>[];
     recordingMode: RecordingMode;
 }
 
-export type AvMixMode = 'primary' | 'mic1' | 'mic2';
+export interface PipelineCapabilities {
+    noiseSuppression: boolean;
+}
 
 export type RecordingMode = 'sessionMode' | 'localMode';
 
@@ -108,7 +113,59 @@ export type PublicationNotification =
     | PublicationNotificationFailure
     | PublicationNotificationStreamingSuccess
     | PublicationNotificationUploadProgress
-    | SessionEnded;
+    | SessionEnded
+    | DeviceFailure
+    | OutputFailure
+    | StreamFailure
+    | PipelineWarning;
+
+/** The device behind a failure. */
+export interface DeviceDetails {
+    /** e.g. `mic-3` */
+    role: string;
+    kind: 'camera' | 'mic' | 'screen';
+    displayName: string;
+    deviceId: string;
+    codec: string;
+    selectedChannel: number | null;
+}
+
+/** A device failed; the files and streams it fed were finalized or closed. */
+export interface DeviceFailure {
+    kind: 'deviceFailure';
+    sessionId: string;
+    device: DeviceDetails;
+    roles: string[];
+    /** Outputs it fed, e.g. `av-mix`, `mic-3` */
+    outputs: string[];
+    reason: string;
+    phase: 'start' | 'running';
+    recordingContinues: boolean;
+}
+
+/** One file failed (encoder, muxer or disk); the device keeps feeding the rest. */
+export interface OutputFailure {
+    kind: 'outputFailure';
+    sessionId: string;
+    output: string;
+    reason: string;
+    recordingContinues: boolean;
+}
+
+/** One stream failed; files are unaffected. */
+export interface StreamFailure {
+    kind: 'streamFailure';
+    sessionId: string;
+    sink: string;
+    reason: string;
+}
+
+export interface PipelineWarning {
+    kind: 'pipelineWarning';
+    sessionId: string;
+    scope: string | null;
+    message: string;
+}
 
 export interface PublicationNotificationFailure {
     kind: 'failure';

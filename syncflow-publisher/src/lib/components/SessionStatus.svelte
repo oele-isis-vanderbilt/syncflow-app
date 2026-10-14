@@ -8,7 +8,8 @@
         | 'recording'
         | 'completed'
         | 'streaming'
-        | 'recordOnly';
+        | 'recordOnly'
+        | 'failed';
 </script>
 
 <script lang="ts">
@@ -28,6 +29,7 @@
         completed: { color: 'green', label: 'Completed' },
         streaming: { color: 'green', label: 'Streaming' },
         recordOnly: { color: 'gray', label: 'Record only' },
+        failed: { color: 'red', label: 'Failed' },
     };
 
     let { status }: { status: Status } = $props();

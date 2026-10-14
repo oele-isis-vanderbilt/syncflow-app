@@ -2,6 +2,7 @@
 mod devices;
 mod errors;
 mod models;
+pub mod pipeline_events;
 mod register;
 mod s3_uploader;
 mod session_listener;
@@ -18,7 +19,10 @@ use livekit_gstreamer::utils::system_time_nanos;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
-use devices::{delete_streaming_config, get_devices, get_streaming_config, set_streaming_config};
+use devices::{
+    delete_streaming_config, get_devices, get_pipeline_capabilities, get_streaming_config,
+    set_streaming_config,
+};
 use register::{delete_registration, register_to_syncflow};
 use session_listener::SessionListener;
 use tauri::{Emitter, Listener, Manager};
@@ -29,10 +33,7 @@ use crate::{
     models::{ActiveSession, S3Config},
     register::{get_credentials, get_device_details, RegistrationResponse},
     session_listener::ClonableNewSessionMessage,
-    syncflow_publisher::{
-        local_recording_only, record_publish_to_syncflow,
-        record_publish_to_syncflow_with_cancellation,
-    },
+    syncflow_publisher::{local_recording_only, record_publish_to_syncflow_with_cancellation},
     utils::load_json,
 };
 
@@ -318,9 +319,11 @@ async fn start_local_recording(
     let cancel_token_clone = cancel_token.clone();
     let session_name_clone = session_name.clone();
     let session_id = format!("local-{}", system_time_nanos());
+    let session_id_clone = session_id.clone();
 
     let task = tauri::async_runtime::spawn(async move {
         local_recording_only(
+            session_id_clone,
             session_name_clone,
             configs,
             app_handle,
@@ -656,6 +659,7 @@ pub fn run() {
             stop_local_recording,
             set_recording_mode,
             get_recording_mode,
+            get_pipeline_capabilities,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

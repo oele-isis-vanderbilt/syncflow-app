@@ -1,5 +1,5 @@
 <script lang="ts">
-    import SelectedDevices from '#lib/components/SelectedDevices.svelte';
+    import CompositeSummary from '#lib/components/CompositeSummary.svelte';
     import SessionStatus, { type Status } from '#lib/components/SessionStatus.svelte';
     import ConfirmModal from '#lib/components/ui/ConfirmModal.svelte';
     import SectionCard from '#lib/components/ui/SectionCard.svelte';
@@ -26,44 +26,19 @@
     import { invoke } from '@tauri-apps/api/core';
     import { goto } from '$app/navigation';
     import { listen } from '@tauri-apps/api/event';
-    import { devicesStore, initialize } from '#lib/store.svelte.js';
     import type {
         NewSessionMessage,
         PublicationNotification,
-        PublicationNotificationFailure,
         PublicationNotificationStreamingSuccess,
     } from '#lib/components/types.js';
+    import { counts, draftFromConfig } from '#lib/compositeConfig.js';
+    import { describeProblem, type Problem } from '#lib/notifications.js';
 
     let { data }: PageProps = $props();
 
-    // Get recording mode from data (with proper typing)
-    const recordingMode: 'sessionMode' | 'localMode' = (data as any).recordingMode || 'sessionMode';
-
-    // Initialize store and restore state from backend config
-    initialize(data.devices);
-
-    // Add selected devices to store
-    data.streamingConfigs.forEach((config) => {
-        const enableStreaming = config.enableStreaming;
-        devicesStore!.addDevice(config.publishOptions, enableStreaming);
-    });
-
-    // Restore avmix state from backend config
-    const hasAvMixDevices = data.streamingConfigs.some((config) => config.avMixMode);
-    if (hasAvMixDevices) {
-        devicesStore!.setAvMixMode(true);
-
-        // Restore avmix roles
-        data.streamingConfigs.forEach((config) => {
-            if (config.avMixMode) {
-                const deviceId =
-                    config.publishOptions.kind === 'Screen'
-                        ? config.publishOptions.screenIdOrName
-                        : config.publishOptions.deviceId;
-                devicesStore!.setAvMixRole(deviceId, config.avMixMode as any);
-            }
-        });
-    }
+    // svelte-ignore state_referenced_locally
+    const recordingMode = data.recordingMode;
+    let setupCounts = $derived(counts(draftFromConfig(data.config)));
 
     let sessionMessages = $state<NewSessionMessage[]>([]);
     let publicationNotifications = $state<PublicationNotification[]>([]);
@@ -171,18 +146,26 @@
         }
     });
 
-    let failures: Record<string, PublicationNotificationFailure[]> = $derived.by(() => {
-        return Object.fromEntries(
-            publicationNotifications
-                .filter((notification) => notification.kind === 'failure')
-                .map((notification) => [
-                    notification.sessionId,
-                    publicationNotifications.filter(
-                        (n) => n.kind === 'failure' && n.sessionId === notification.sessionId
-                    ) as PublicationNotificationFailure[],
-                ])
-        );
+    let problems: Record<string, Problem[]> = $derived.by(() => {
+        const bySession: Record<string, Problem[]> = {};
+        for (const notification of publicationNotifications) {
+            const problem = describeProblem(notification);
+            if (problem) (bySession[notification.sessionId] ??= []).push(problem);
+        }
+        return bySession;
     });
+
+    // The recording in progress, or the most recent one.
+    let currentSessionId = $derived(
+        currentlyJoinedSession ??
+            activeLocalSessionId ??
+            publicationNotifications.findLast((n) => n.kind === 'streamingSuccess')?.sessionId ??
+            null
+    );
+    let currentNotifications = $derived(
+        publicationNotifications.filter((n) => n.sessionId === currentSessionId)
+    );
+    let currentProblems = $derived(currentSessionId ? (problems[currentSessionId] ?? []) : []);
 
     let successes: Record<string, PublicationNotificationStreamingSuccess[]> = $derived.by(() => {
         return Object.fromEntries(
@@ -302,10 +285,6 @@
     let localSessionMessages = $derived(
         sessionMessages.filter((msg) => msg.sessionId.startsWith('local-'))
     );
-    let streamingDeviceCount = $derived(
-        data.streamingConfigs.filter((config) => config.enableStreaming).length
-    );
-
     function isSessionAvailableOnServer(sessionId: string): boolean {
         return allSessions.some(([id, _name, _active]) => id === sessionId);
     }
@@ -336,36 +315,32 @@
     }
 </script>
 
-{#snippet sessionDetails(sessionId: string, detailsTitle: string, failuresTitle: string)}
+{#snippet problemAlert(problem: Problem)}
+    <Alert color={problem.color}>
+        {#snippet icon()}<ExclamationCircleOutline class="h-5 w-5" />{/snippet}
+        <span class="font-medium">{problem.title}:</span>
+        {problem.detail}
+    </Alert>
+{/snippet}
+
+{#snippet sessionDetails(sessionId: string, detailsTitle: string)}
     <div class="space-y-4">
-        {#if successes[sessionId]}
+        {#each successes[sessionId] ?? [] as success}
             <div class="rounded-lg border border-gray-200 p-3">
                 <Heading tag="h5" class="mb-2 text-lg">{detailsTitle}</Heading>
-                <div class="space-y-2">
-                    {#each successes[sessionId] as success}
-                        <pre
-                            class="overflow-x-auto rounded-lg bg-gray-50 p-2 text-xs text-gray-900">{JSON.stringify(
-                                success,
-                                null,
-                                2
-                            )}</pre>
-                    {/each}
-                </div>
+                <dl class="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
+                    <dt class="text-gray-500">Started</dt>
+                    <dd class="text-gray-900 sm:col-span-3">
+                        {new Date(Number(BigInt(success.startedAt) / 1_000_000n)).toLocaleString()}
+                    </dd>
+                    <dt class="text-gray-500">Recording</dt>
+                    <dd class="text-gray-900 sm:col-span-3">{success.devices.join(', ')}</dd>
+                </dl>
             </div>
-        {/if}
-        {#if failures[sessionId]}
-            {#each failures[sessionId] as failure}
-                <Alert color="red">
-                    {#snippet icon()}<ExclamationCircleOutline class="h-5 w-5" />{/snippet}
-                    <span class="font-medium">{failuresTitle}</span>
-                    <pre class="mt-2 overflow-x-auto text-xs">{JSON.stringify(
-                            failure,
-                            null,
-                            2
-                        )}</pre>
-                </Alert>
-            {/each}
-        {/if}
+        {/each}
+        {#each problems[sessionId] ?? [] as problem}
+            {@render problemAlert(problem)}
+        {/each}
         {#if uploadProgress[sessionId] !== undefined}
             <Progressbar
                 progress={uploadProgress[sessionId]}
@@ -374,7 +349,7 @@
                 size="h-4"
             />
         {/if}
-        {#if !successes[sessionId] && !failures[sessionId] && uploadProgress[sessionId] === undefined}
+        {#if !successes[sessionId] && !problems[sessionId] && uploadProgress[sessionId] === undefined}
             <P class="text-sm text-gray-500">No messages yet.</P>
         {/if}
     </div>
@@ -396,29 +371,27 @@
     </Alert>
 {/if}
 
-<SelectedDevices
-    allDevices={data.devices}
-    selectedDevicesFn={devicesStore?.getSelectedDevicesFn() || (() => [])}
-    showDeleteButton={false}
-    streamingConfigFn={devicesStore?.getStreamingConfigFn() || (() => ({}))}
-    avMixMode={devicesStore?.getAvMixMode() || false}
-    avMixRoles={devicesStore?.getAvMixRoles() || {}}
-    onAvMixModeChange={devicesStore?.setAvMixMode || (() => {})}
-    onAvMixRoleChange={devicesStore?.setAvMixRole || (() => {})}
-    readonly={true}
+<CompositeSummary
+    config={data.config}
+    devices={data.devices}
+    notifications={currentNotifications}
 />
+
+{#each currentProblems as problem}
+    {@render problemAlert(problem)}
+{/each}
 
 {#if recordingMode === 'sessionMode'}
     <SectionCard title="Stream Status" icon={VideoCameraOutline}>
         {#snippet actions()}<SessionStatus status="listening" />{/snippet}
         <dl class="grid grid-cols-2 gap-4">
             <div>
-                <dt class="text-sm text-gray-500">Recording devices</dt>
-                <dd class="text-gray-900">{data.streamingConfigs.length} device(s)</dd>
+                <dt class="text-sm text-gray-500">Files per recording</dt>
+                <dd class="text-gray-900">{setupCounts.files}</dd>
             </div>
             <div>
-                <dt class="text-sm text-gray-500">Streaming devices</dt>
-                <dd class="text-gray-900">{streamingDeviceCount} device(s)</dd>
+                <dt class="text-sm text-gray-500">Streams</dt>
+                <dd class="text-gray-900">{setupCounts.streams}</dd>
             </div>
         </dl>
     </SectionCard>
@@ -482,7 +455,7 @@
                                 </div>
                             </div>
                         {/snippet}
-                        {@render sessionDetails(message.sessionId, 'Messages', 'Failure')}
+                        {@render sessionDetails(message.sessionId, 'Recording')}
                     </AccordionItem>
                 {/each}
             </Accordion>
@@ -492,10 +465,10 @@
     <SectionCard title="Recording Controls" icon={VideoCameraOutline}>
         <div class="flex flex-wrap items-center justify-between gap-4">
             <dl class="grid grid-cols-2 gap-x-8 gap-y-1">
-                <dt class="text-sm text-gray-500">Recording devices</dt>
-                <dd class="text-gray-900">{data.streamingConfigs.length} device(s)</dd>
+                <dt class="text-sm text-gray-500">Files per recording</dt>
+                <dd class="text-gray-900">{setupCounts.files}</dd>
                 <dt class="text-sm text-gray-500">Upload enabled</dt>
-                <dd class="text-gray-900">{streamingDeviceCount > 0 ? 'Yes' : 'No'}</dd>
+                <dd class="text-gray-900">{setupCounts.streams > 0 ? 'Yes' : 'No'}</dd>
             </dl>
             <div class="flex items-center gap-2">
                 {#if !isLocalRecording}
@@ -541,11 +514,7 @@
                                 />
                             </div>
                         {/snippet}
-                        {@render sessionDetails(
-                            message.sessionId,
-                            'Recording Details',
-                            'Recording failure'
-                        )}
+                        {@render sessionDetails(message.sessionId, 'Recording details')}
                     </AccordionItem>
                 {/each}
             </Accordion>

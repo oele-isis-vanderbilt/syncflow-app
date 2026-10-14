@@ -10,6 +10,10 @@ homepage = "https://github.com/oele-isis-vanderbilt/livekit-gstreamer.git"
 keywords = ["gstreamer", "livekit", "audio", "video", "streaming"]
 authors = ["Umesh Timalsina <umesh.timalsina@vanderbilt.edu>"]
 
+[features]
+# Maps `test:` device ids to live test sources (always on in unit tests).
+test-sources = []
+
 [dependencies]
 chrono = "0.4.41"
 display-info = "0.5.4"
@@ -32,6 +36,7 @@ libc = "0.2"
 pkg-config = "0.3"
 
 [dev-dependencies]
+gstreamer-pbutils = "=0.24.0"
 dotenvy = "0.15.7"
 log = "0.4.22"
 env_logger = "0.11.5"
