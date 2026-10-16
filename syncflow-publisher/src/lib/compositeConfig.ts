@@ -11,6 +11,9 @@ import type {
 } from '#lib/components/types.js';
 import { channelsLabel, deviceIdOf, deviceLabel, type DeviceKind } from '#lib/publishOptions.js';
 
+/** The voice-activity threshold of a new setup (matches `DEFAULT_VAD_THRESHOLD` in Rust). */
+export const DEFAULT_VAD_THRESHOLD = 0.2;
+
 export interface DraftOutput<T> {
     options: T | null;
     stream: boolean;
@@ -29,6 +32,8 @@ export interface Draft {
     screen: { include: boolean } & DraftOutput<ScreenPublishOptions>;
     cameras: DraftOutput<VideoPublishOptions>[];
     mics: DraftOutput<AudioPublishOptions>[];
+    /** Streamed audio is muted while the chance of speech is below this (0 to 1). */
+    vadThreshold: number;
 }
 
 /** Where a device sits in the setup. */
@@ -68,6 +73,7 @@ export function emptyDraft(): Draft {
         screen: { include: false, options: null, stream: false },
         cameras: [],
         mics: [],
+        vadThreshold: DEFAULT_VAD_THRESHOLD,
     };
 }
 
@@ -89,6 +95,7 @@ export function draftFromConfig(config: CompositeConfig): Draft {
             : { include: false, options: null, stream: false },
         cameras: config.cameras.map((c) => ({ ...c })),
         mics: config.mics.map((m) => ({ ...m })),
+        vadThreshold: config.vadThreshold ?? DEFAULT_VAD_THRESHOLD,
     };
 }
 
@@ -252,6 +259,12 @@ export function validate(draft: Draft, devices: MediaDeviceInfo[]): Issue[] {
     if (all.length === 0) {
         issues.push({ slot: null, message: 'Add at least one device.' });
     }
+    if (!(draft.vadThreshold >= 0 && draft.vadThreshold <= 1)) {
+        issues.push({
+            slot: null,
+            message: 'The voice activity threshold must be between 0 and 1.',
+        });
+    }
     all.forEach((slot, index) => {
         if (!slot.options) {
             issues.push({ slot: slot.id, message: MISSING[slot.kind] });
@@ -349,5 +362,6 @@ export function toConfig(draft: Draft, recordingMode: RecordingMode): CompositeC
         cameras: draft.cameras.map(output),
         mics: draft.mics.map(output),
         recordingMode,
+        vadThreshold: draft.vadThreshold,
     };
 }

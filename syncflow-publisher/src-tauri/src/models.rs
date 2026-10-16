@@ -1,4 +1,4 @@
-use livekit_gstreamer::composite::{AvMixSpec, CompositeStreamSpec, Output};
+use livekit_gstreamer::composite::{AvMixSpec, CompositeStreamSpec, Output, StreamAudioOptions};
 use livekit_gstreamer::{
     AudioPublishOptions, PublishOptions, ScreenPublishOptions, VideoPublishOptions,
 };
@@ -50,6 +50,17 @@ pub struct CompositeConfig {
     #[serde(default)]
     pub mics: Vec<OutputConfig<AudioPublishOptions>>,
     pub recording_mode: RecordingMode,
+    /// `audiornnoise` voice-activity threshold for streamed audio (0.0 turns gating off).
+    /// Recorded files are not affected.
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f32,
+}
+
+/// The VAD threshold of a setup that doesn't set one.
+pub const DEFAULT_VAD_THRESHOLD: f32 = 0.2;
+
+fn default_vad_threshold() -> f32 {
+    DEFAULT_VAD_THRESHOLD
 }
 
 impl CompositeConfig {
@@ -112,7 +123,10 @@ impl CompositeConfig {
             cameras: self.cameras.iter().map(output).collect(),
             mics: self.mics.iter().map(output).collect(),
             output_dir: Some(output_dir),
-            stream_audio: Default::default(),
+            stream_audio: StreamAudioOptions {
+                vad_threshold: self.vad_threshold,
+                ..Default::default()
+            },
             encoders: Default::default(),
             start_policy: Default::default(),
             manifest_context: Some(manifest_context),
@@ -196,5 +210,19 @@ mod tests {
         let round_trip = serde_json::to_value(&config).unwrap();
         assert_eq!(round_trip["avMix"]["mic1"]["deviceId"], "mic-a");
         assert_eq!(round_trip["recordingMode"], "localMode");
+        assert_eq!(config.vad_threshold, DEFAULT_VAD_THRESHOLD);
+    }
+
+    #[test]
+    fn applies_the_vad_threshold_to_the_stream_spec() {
+        let mut json: serde_json::Value = serde_json::from_str(UI_CONFIG).unwrap();
+        json["vadThreshold"] = 0.5.into();
+        let config: CompositeConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.vad_threshold, 0.5);
+        assert_eq!(serde_json::to_value(&config).unwrap()["vadThreshold"], 0.5);
+
+        let spec = config.to_stream_spec(PathBuf::new(), serde_json::Value::Null);
+        assert_eq!(spec.stream_audio.vad_threshold, 0.5);
+        assert!(spec.stream_audio.noise_suppression);
     }
 }

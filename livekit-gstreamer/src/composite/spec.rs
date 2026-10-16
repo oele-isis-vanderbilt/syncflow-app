@@ -157,6 +157,8 @@ pub enum SpecError {
     NothingToDo(String),
     #[error("the spec has more than 255 devices or roles of one kind")]
     TooManyDevices,
+    #[error("VAD threshold must be between 0.0 and 1.0, got {0}")]
+    InvalidVadThreshold(f32),
 }
 
 /// Source options for one physical device. A device shared by several mic roles
@@ -249,6 +251,10 @@ impl CompositeStreamSpec {
             && self.mics.is_empty()
         {
             return Err(SpecError::Empty);
+        }
+        let vad_threshold = self.stream_audio.vad_threshold;
+        if !(0.0..=1.0).contains(&vad_threshold) {
+            return Err(SpecError::InvalidVadThreshold(vad_threshold));
         }
         let records = self.output_dir.is_some();
         let mut resolver = Resolver::new(names);
@@ -918,6 +924,21 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert_eq!(rejects(recording()), SpecError::Empty);
+    }
+
+    #[test]
+    fn rejects_vad_threshold_out_of_range() {
+        for vad_threshold in [-0.1, 1.5, f32::NAN] {
+            let error = rejects(CompositeStreamSpec {
+                mics: vec![out(mic("mic-a", 1, None), true)],
+                stream_audio: StreamAudioOptions {
+                    vad_threshold,
+                    ..Default::default()
+                },
+                ..recording()
+            });
+            assert!(matches!(error, SpecError::InvalidVadThreshold(_)));
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Alert, Button, Heading, Helper, Toggle } from 'flowbite-svelte';
+    import { Alert, Button, Heading, Helper, Label, Range, Toggle } from 'flowbite-svelte';
     import {
         ExclamationCircleOutline,
         InfoCircleOutline,
@@ -9,7 +9,7 @@
     } from 'flowbite-svelte-icons';
     import SectionCard from '#lib/components/ui/SectionCard.svelte';
     import DeviceRow from './DeviceRow.svelte';
-    import type { MediaDeviceInfo } from './types';
+    import type { MediaDeviceInfo, PipelineCapabilities } from './types';
     import {
         cameraLabel,
         micLabel,
@@ -25,11 +25,12 @@
         devices: MediaDeviceInfo[];
         issues: Issue[];
         notices: string[];
+        capabilities: PipelineCapabilities | null;
         refreshing: boolean;
         onrefresh: () => void;
     }
 
-    let { draft, devices, issues, notices, refreshing, onrefresh }: Props = $props();
+    let { draft, devices, issues, notices, capabilities, refreshing, onrefresh }: Props = $props();
 
     function errorFor(slot: SlotId): string | null {
         return issues.find((i) => i.slot === slot)?.message ?? null;
@@ -37,6 +38,8 @@
 
     let setupIssues = $derived(issues.filter((i) => i.slot === null));
     let micFiles = $derived(draft.avMix.useMic2 ? 'mic-1, mic-2' : 'mic-1');
+    // Without audiornnoise there is nothing to gate with; unknown capabilities leave it enabled.
+    let vadDisabled = $derived(capabilities?.noiseSuppression === false);
 </script>
 
 <SectionCard title="Recording setup" icon={VideoCameraOutline}>
@@ -207,6 +210,29 @@
                     onremove={() => draft.mics.splice(i, 1)}
                 />
             {/each}
+        </div>
+
+        <div class="space-y-3 rounded-lg border border-gray-200 p-3">
+            <Heading tag="h5" class="text-lg">Streamed audio</Heading>
+            <div class="space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                    <Label for="vad-threshold">Voice activity threshold</Label>
+                    <span class="text-sm text-gray-500">{draft.vadThreshold.toFixed(2)}</span>
+                </div>
+                <Range
+                    id="vad-threshold"
+                    color="gray"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    disabled={vadDisabled}
+                    bind:value={draft.vadThreshold}
+                />
+                <Helper>
+                    Mutes streamed audio while the chance of speech is below this value. 0 turns
+                    gating off. Recordings are not affected.
+                </Helper>
+            </div>
         </div>
 
         {#each setupIssues as issue}
