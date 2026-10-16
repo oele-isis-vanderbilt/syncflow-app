@@ -321,8 +321,8 @@ export function notices(
     if (mode === 'sessionMode' && all.length > 0 && streamed.length === 0) {
         result.push('Nothing will be streamed; this machine records only.');
     }
-    if (capabilities && !capabilities.noiseSuppression && streamed.some((s) => s.kind === 'mic')) {
-        result.push("Streamed audio won't be noise suppressed: audiornnoise is not installed.");
+    if (capabilities && !capabilities.noiseSuppression && all.some((s) => s.kind === 'mic')) {
+        result.push("Audio won't be noise suppressed: audiornnoise is not installed.");
     }
     return result;
 }

@@ -113,8 +113,8 @@
                     </Button>
                 {/if}
                 <Helper>
-                    Mic L and Mic R are recorded on the left and right channels. The stream gets the
-                    camera and one mono track of both mics, noise suppressed.
+                    Mic L and Mic R are noise suppressed and recorded on the left and right
+                    channels. The stream gets the camera and one mono track of both mics.
                 </Helper>
             {/if}
         </div>
@@ -213,7 +213,7 @@
         </div>
 
         <div class="space-y-3 rounded-lg border border-gray-200 p-3">
-            <Heading tag="h5" class="text-lg">Streamed audio</Heading>
+            <Heading tag="h5" class="text-lg">Audio</Heading>
             <div class="space-y-2">
                 <div class="flex items-center justify-between gap-2">
                     <Label for="vad-threshold">Voice activity threshold</Label>
@@ -229,8 +229,8 @@
                     bind:value={draft.vadThreshold}
                 />
                 <Helper>
-                    Mutes streamed audio while the chance of speech is below this value. 0 turns
-                    gating off. Recordings are not affected.
+                    Mutes recorded and streamed audio while the chance of speech is below this
+                    value. 0 turns gating off.
                 </Helper>
             </div>
         </div>
