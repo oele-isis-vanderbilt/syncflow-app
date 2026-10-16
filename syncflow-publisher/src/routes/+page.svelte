@@ -147,6 +147,7 @@
     devices={setup.devices}
     {issues}
     notices={setupNotices}
+    capabilities={data.capabilities}
     {refreshing}
     onrefresh={refresh}
 />

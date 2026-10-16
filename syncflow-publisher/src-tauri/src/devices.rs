@@ -212,7 +212,7 @@ pub async fn delete_streaming_config(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineCapabilities {
-    /// Whether streamed audio can be noise suppressed (`audiornnoise` is installed).
+    /// Whether mic audio can be noise suppressed (`audiornnoise` is installed).
     noise_suppression: bool,
 }
 

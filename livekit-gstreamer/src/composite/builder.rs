@@ -4,8 +4,8 @@
 use super::events::CompositeError;
 use super::ids::{DeviceKey, DeviceKind, OutputId, Role, SinkId};
 use super::spec::{
-    DeviceOptions, EncoderOptions, H264Encoder, ResolvedDevice, ResolvedOutput, ResolvedSpec,
-    SinkInfo, SinkKind, StartPolicy,
+    AudioOptions, DeviceOptions, EncoderOptions, H264Encoder, ResolvedDevice, ResolvedOutput,
+    ResolvedSpec, SinkInfo, SinkKind, StartPolicy,
 };
 use super::tags::{element_name, ElementTag, Scope};
 use crate::get_gst_device;
@@ -24,6 +24,9 @@ pub struct DeviceChainHandles {
     pub source: Element,
     pub elements: Vec<Element>,
     pub tee: Element,
+    /// Whether `audiornnoise` is in the chain. False for cameras and screens, or when it
+    /// isn't installed.
+    pub denoised: bool,
 }
 
 /// queue → channel pick → audiorate → tee for one role. Cameras and screens use
@@ -63,7 +66,7 @@ pub struct OutputBranchHandles {
     pub filesink: Element,
 }
 
-/// Leaky queue → convert (→ audiornnoise) → appsink for one track.
+/// Leaky queue → convert → appsink for one track.
 #[derive(Debug)]
 pub struct StreamBranchHandles {
     pub sink: SinkId,
@@ -74,8 +77,6 @@ pub struct StreamBranchHandles {
     pub frames: broadcast::Sender<Arc<Buffer>>,
     /// Fires when the branch reaches EOS (stop or isolation), so its track can unpublish.
     pub closed: broadcast::Sender<()>,
-    /// Whether `audiornnoise` is in the chain. False for video, or when it isn't installed.
-    pub denoised: bool,
 }
 
 /// Everything added to the pipeline, keyed by identity. Isolation removes entries.
@@ -389,7 +390,7 @@ pub fn build_graph(
 
     for device in &spec.devices {
         let key = device.device.key;
-        match add_device_chain(pipeline, device) {
+        match add_device_chain(pipeline, device, &spec.audio) {
             Ok(chain) => {
                 graph.devices.insert(key, chain);
             }
@@ -482,14 +483,21 @@ fn retimestamp_on_pipeline_clock(source: &Element) {
 ///
 /// - camera: `src ! caps(codec) ! [decode] ! videoconvert ! videoscale ! caps(I420) ! tee`
 /// - screen: `src ! videoconvert ! videoscale ! caps(I420) ! tee`
-/// - mic: `src ! caps(rate, channels) ! audioconvert ! audioresample ! caps(F32LE 48k) ! tee`
+/// - mic: `src ! caps(rate, channels) ! audioconvert ! audioresample ! caps(F32LE 48k)
+///   ! audiornnoise ! tee`
+///
+/// `audiornnoise` runs once per mic, before the tee, so every file and stream of that mic
+/// gets the same denoised (and, with a VAD threshold, gated) audio. Without it installed
+/// the chain is built without noise suppression and `denoised` is false.
 pub fn add_device_chain(
     pipeline: &Pipeline,
     device: &ResolvedDevice,
+    audio: &AudioOptions,
 ) -> Result<DeviceChainHandles, CompositeError> {
     let scope = Scope::Device(device.device.key);
     let source = make_source(device)?;
     let mut chain = vec![source.clone()];
+    let mut denoised = false;
 
     match &device.options {
         DeviceOptions::Video(options) => {
@@ -539,6 +547,12 @@ pub fn add_device_chain(
                 "caps",
                 &audio_caps(options.channels),
             )?);
+            if audio.noise_suppression && rnnoise_available() {
+                let rnnoise = make_tagged_element("audiornnoise", scope, "rnnoise")?;
+                rnnoise.set_property("voice-activity-threshold", audio.vad_threshold);
+                chain.push(rnnoise);
+                denoised = true;
+            }
         }
     }
 
@@ -551,6 +565,7 @@ pub fn add_device_chain(
         source,
         elements: chain,
         tee,
+        denoised,
     })
 }
 
@@ -934,25 +949,22 @@ fn configure_h264_encoder(encoder: &Element, kbps: u32, framerate: i32) {
 ///
 /// - video: `queue(leaky) ! videoscale ! videoconvert ! caps(I420 640x480) ! appsink`
 /// - audio: `queue(leaky) ! audioconvert ! audioresample ! caps(F32LE 48k mono)
-///   ! audiornnoise ! audioconvert ! caps(S16LE 48k mono) ! appsink`
+///   ! audioconvert ! caps(S16LE 48k mono) ! appsink`
 ///
 /// Multichannel input (the L/R mix, or an interface mic) is downmixed to mono by
 /// averaging with an explicit `mix-matrix`, which works whether or not the channels are
-/// positioned. `audiornnoise` runs only here, so files keep the raw audio; without it
-/// installed the branch is built without noise suppression and `denoised` is false.
+/// positioned. Noise suppression already ran in the mic's device chain.
 pub fn add_stream_branch(
     pipeline: &Pipeline,
     spec: &ResolvedSpec,
     info: &SinkInfo,
     tee: &Element,
 ) -> Result<StreamBranchHandles, CompositeError> {
-    let audio = &spec.stream_audio;
     let scope = Scope::Sink(info.id);
     let queue = make_tagged_element("queue", scope, "q")?;
     queue.set_property_from_str("leaky", "downstream");
     queue.set_property("max-size-bytes", 0u32);
     let mut chain = vec![queue.clone()];
-    let mut denoised = false;
 
     let (caps, capacity) = match info.kind {
         SinkKind::Video { width, height } => {
@@ -988,12 +1000,6 @@ pub fn add_stream_branch(
                 .field("layout", "interleaved")
                 .build();
             chain.push(make_capsfilter(scope, "float", &float)?);
-            if audio.noise_suppression && rnnoise_available() {
-                let rnnoise = make_tagged_element("audiornnoise", scope, "rnnoise")?;
-                rnnoise.set_property("voice-activity-threshold", audio.vad_threshold);
-                chain.push(rnnoise);
-                denoised = true;
-            }
             chain.push(make_tagged_element("audioconvert", scope, "convert")?);
             let caps = Caps::builder("audio/x-raw")
                 .field("format", "S16LE")
@@ -1025,7 +1031,6 @@ pub fn add_stream_branch(
         appsink,
         frames,
         closed,
-        denoised,
     })
 }
 
@@ -1191,7 +1196,12 @@ mod tests {
         let devices: HashMap<DeviceKey, DeviceChainHandles> = spec
             .devices
             .iter()
-            .map(|d| (d.device.key, add_device_chain(&pipeline, d).unwrap()))
+            .map(|d| {
+                (
+                    d.device.key,
+                    add_device_chain(&pipeline, d, &spec.audio).unwrap(),
+                )
+            })
             .collect();
         let mut sinks = Vec::new();
         for role_ref in &spec.roles {
@@ -1303,7 +1313,7 @@ mod tests {
         {
             devices.insert(
                 device.device.key,
-                add_device_chain(&pipeline, device).unwrap(),
+                add_device_chain(&pipeline, device, &spec.audio).unwrap(),
             );
         }
         let role = |n| {
@@ -1390,7 +1400,7 @@ mod tests {
         let pipeline = Pipeline::new();
         let mut roles = Vec::new();
         for (n, device) in (1..).zip(spec.devices.iter().skip(1)) {
-            let chain = add_device_chain(&pipeline, device).unwrap();
+            let chain = add_device_chain(&pipeline, device, &spec.audio).unwrap();
             roles.push(add_role_chain(&pipeline, &spec, Role::Mic(n), &chain).unwrap());
         }
         add_lr_mix(&pipeline, Some(&roles[0]), Some(&roles[1])).unwrap();
@@ -1410,6 +1420,7 @@ mod tests {
         pipeline: Pipeline,
         paths: HashMap<OutputId, std::path::PathBuf>,
         sinks: HashMap<SinkId, StreamBranchHandles>,
+        devices: HashMap<DeviceKey, DeviceChainHandles>,
     }
 
     /// Builds `spec` with `build_graph`; every device must open.
@@ -1432,6 +1443,7 @@ mod tests {
             pipeline,
             paths,
             sinks: graph.sinks,
+            devices: graph.devices,
         };
         (built, failed)
     }
@@ -1775,13 +1787,7 @@ mod tests {
                 SinkId::Screen(1)
             ]
         );
-        // Noise suppression runs on every audio stream, and only there.
-        for (id, branch) in &built.sinks {
-            let is_audio = matches!(id, SinkId::AvMixAudio | SinkId::Mic(_));
-            assert_eq!(branch.denoised, is_audio && rnnoise_available(), "{id}");
-            let rnnoise = built.pipeline.by_name(&format!("sink.{id}:rnnoise"));
-            assert_eq!(rnnoise.is_some(), branch.denoised, "{id}");
-        }
+        assert_denoised_once_per_mic(&spec, &built, rnnoise_available());
         let paths = built.paths.clone();
         assert_streams(built, 2);
 
@@ -1806,13 +1812,43 @@ mod tests {
     #[test]
     fn noise_suppression_can_be_turned_off() {
         let mut spec = streaming_spec(None);
-        spec.stream_audio.noise_suppression = false;
-        let built = build_all(&spec.validate_with_names(&HashMap::new()).unwrap());
-        assert!(built.sinks.values().all(|b| !b.denoised));
-        assert!(built
-            .pipeline
-            .by_name("sink.av-mix-audio:rnnoise")
-            .is_none());
+        spec.audio.noise_suppression = false;
+        let spec = spec.validate_with_names(&HashMap::new()).unwrap();
+        let built = build_all(&spec);
+        assert_denoised_once_per_mic(&spec, &built, false);
+    }
+
+    #[test]
+    fn files_are_denoised_without_streaming() {
+        let dir = temp_dir("denoise-files");
+        let mut spec = streaming_spec(Some(dir.clone()));
+        spec.av_mix.as_mut().unwrap().stream = false;
+        spec.screen.as_mut().unwrap().stream = false;
+        spec.cameras[0].stream = false;
+        spec.mics[0].stream = false;
+        let spec = spec.validate_with_names(&HashMap::new()).unwrap();
+        let built = build_all(&spec);
+        assert!(built.sinks.is_empty());
+        assert_denoised_once_per_mic(&spec, &built, rnnoise_available());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Every mic device chain has one `audiornnoise` (when `expected`), cameras and
+    /// screens have none, and no stream branch adds its own.
+    fn assert_denoised_once_per_mic(spec: &ResolvedSpec, built: &Built, expected: bool) {
+        for device in &spec.devices {
+            let key = device.device.key;
+            let is_mic = device.device.kind == DeviceKind::Mic;
+            assert_eq!(built.devices[&key].denoised, is_mic && expected, "{key}");
+            let rnnoise = built.pipeline.by_name(&format!("{key}:rnnoise"));
+            assert_eq!(rnnoise.is_some(), is_mic && expected, "{key}");
+        }
+        for id in built.sinks.keys() {
+            assert!(built
+                .pipeline
+                .by_name(&format!("sink.{id}:rnnoise"))
+                .is_none());
+        }
     }
 
     #[test]

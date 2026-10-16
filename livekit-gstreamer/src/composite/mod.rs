@@ -20,7 +20,7 @@ pub use events::{
 pub use ids::{DeviceKey, DeviceKind, DeviceRef, OutputId, Role, RoleRef, SinkId};
 pub use manifest::{ManifestStatus, OutputRecord, OutputStatus, RecordingManifest};
 pub use spec::{
-    AvMixSpec, CompositeStreamSpec, EncoderOptions, H264Encoder, Output, SinkInfo, SinkKind,
-    SpecError, StartPolicy, StreamAudioOptions,
+    AudioOptions, AvMixSpec, CompositeStreamSpec, EncoderOptions, H264Encoder, Output, SinkInfo,
+    SinkKind, SpecError, StartPolicy,
 };
 pub use stream::{CompositeStream, SinkSubscription, StartReport};
