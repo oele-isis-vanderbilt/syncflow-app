@@ -1,4 +1,4 @@
-use livekit_gstreamer::composite::{AvMixSpec, CompositeStreamSpec, Output, StreamAudioOptions};
+use livekit_gstreamer::composite::{AudioOptions, AvMixSpec, CompositeStreamSpec, Output};
 use livekit_gstreamer::{
     AudioPublishOptions, PublishOptions, ScreenPublishOptions, VideoPublishOptions,
 };
@@ -50,8 +50,8 @@ pub struct CompositeConfig {
     #[serde(default)]
     pub mics: Vec<OutputConfig<AudioPublishOptions>>,
     pub recording_mode: RecordingMode,
-    /// `audiornnoise` voice-activity threshold for streamed audio (0.0 turns gating off).
-    /// Recorded files are not affected.
+    /// `audiornnoise` voice-activity threshold for every mic, applied to recorded and
+    /// streamed audio alike (0.0 turns gating off).
     #[serde(default = "default_vad_threshold")]
     pub vad_threshold: f32,
 }
@@ -123,7 +123,7 @@ impl CompositeConfig {
             cameras: self.cameras.iter().map(output).collect(),
             mics: self.mics.iter().map(output).collect(),
             output_dir: Some(output_dir),
-            stream_audio: StreamAudioOptions {
+            audio: AudioOptions {
                 vad_threshold: self.vad_threshold,
                 ..Default::default()
             },
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&config).unwrap()["vadThreshold"], 0.5);
 
         let spec = config.to_stream_spec(PathBuf::new(), serde_json::Value::Null);
-        assert_eq!(spec.stream_audio.vad_threshold, 0.5);
-        assert!(spec.stream_audio.noise_suppression);
+        assert_eq!(spec.audio.vad_threshold, 0.5);
+        assert!(spec.audio.noise_suppression);
     }
 }

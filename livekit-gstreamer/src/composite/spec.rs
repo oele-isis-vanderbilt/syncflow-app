@@ -11,7 +11,7 @@ use thiserror::Error;
 /// Size of every streamed video track.
 pub const STREAM_VIDEO_WIDTH: u32 = 640;
 pub const STREAM_VIDEO_HEIGHT: u32 = 480;
-/// Every streamed audio track is mono at this rate (what `audiornnoise` requires).
+/// Every streamed audio track is mono at this rate.
 pub const STREAM_AUDIO_RATE: u32 = 48_000;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct CompositeStreamSpec {
     /// `None` builds no file branches (stream only).
     pub output_dir: Option<PathBuf>,
     #[serde(default)]
-    pub stream_audio: StreamAudioOptions,
+    pub audio: AudioOptions,
     #[serde(default)]
     pub encoders: EncoderOptions,
     #[serde(default)]
@@ -56,14 +56,16 @@ pub struct Output<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamAudioOptions {
-    /// Run `audiornnoise` on every streamed audio track. Files keep raw audio.
+pub struct AudioOptions {
+    /// Run `audiornnoise` once on every mic, right after capture, so its files and
+    /// streams all get the denoised audio.
     pub noise_suppression: bool,
-    /// `audiornnoise` `voice-activity-threshold`; 0.0 disables gating.
+    /// `audiornnoise` `voice-activity-threshold`, applied to files and streams alike;
+    /// 0.0 disables gating.
     pub vad_threshold: f32,
 }
 
-impl Default for StreamAudioOptions {
+impl Default for AudioOptions {
     fn default() -> Self {
         Self {
             noise_suppression: true,
@@ -218,7 +220,7 @@ pub struct ResolvedSpec {
     pub outputs: Vec<ResolvedOutput>,
     pub sinks: Vec<SinkInfo>,
     pub output_dir: Option<PathBuf>,
-    pub stream_audio: StreamAudioOptions,
+    pub audio: AudioOptions,
     pub encoders: EncoderOptions,
     pub start_policy: StartPolicy,
     pub manifest_context: Option<serde_json::Value>,
@@ -252,7 +254,7 @@ impl CompositeStreamSpec {
         {
             return Err(SpecError::Empty);
         }
-        let vad_threshold = self.stream_audio.vad_threshold;
+        let vad_threshold = self.audio.vad_threshold;
         if !(0.0..=1.0).contains(&vad_threshold) {
             return Err(SpecError::InvalidVadThreshold(vad_threshold));
         }
@@ -326,7 +328,7 @@ impl CompositeStreamSpec {
             outputs,
             sinks,
             output_dir: self.output_dir.clone(),
-            stream_audio: self.stream_audio.clone(),
+            audio: self.audio.clone(),
             encoders: self.encoders.clone(),
             start_policy: self.start_policy,
             manifest_context: self.manifest_context.clone(),
@@ -931,7 +933,7 @@ mod tests {
         for vad_threshold in [-0.1, 1.5, f32::NAN] {
             let error = rejects(CompositeStreamSpec {
                 mics: vec![out(mic("mic-a", 1, None), true)],
-                stream_audio: StreamAudioOptions {
+                audio: AudioOptions {
                     vad_threshold,
                     ..Default::default()
                 },
