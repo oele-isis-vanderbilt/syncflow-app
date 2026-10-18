@@ -96,6 +96,8 @@ export interface CompositeConfig {
     cameras: OutputConfig<VideoPublishOptions>[];
     mics: OutputConfig<AudioPublishOptions>[];
     recordingMode: RecordingMode;
+    /** Voice-activity threshold for streamed audio (0 turns gating off); recordings are unaffected. */
+    vadThreshold: number;
 }
 
 export interface PipelineCapabilities {
