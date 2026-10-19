@@ -3,5 +3,5 @@
 recordings
 .DS_Store
 
-# Vendored GStreamer (scripts/gstreamer/fetch-macos.sh)
+# Vendored GStreamer (scripts/gstreamer/fetch-macos.sh, fetch-windows.ps1)
 /third_party/gstreamer/
