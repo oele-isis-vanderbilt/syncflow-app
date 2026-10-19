@@ -3416,6 +3416,7 @@ dependencies = [
  "shared 0.1.0 (git+https://github.com/oele-isis-vanderbilt/SyncFlow.git?branch=main)",
  "thiserror 2.0.12",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

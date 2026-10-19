@@ -711,10 +711,13 @@ pub fn add_lr_mix(
 /// Adds the file branch of one output, fed from `video_tee` and/or `audio_tee`:
 ///
 /// ```text
-/// video tee ! queue ! videorate ! h264 encoder ! h264parse ─┐
-///                                                            mp4mux ! filesink
-/// audio tee ! queue ! audioconvert ! avenc_aac ! aacparse ──┘
+/// video tee ! queue ! videorate ! videoconvert ! h264 encoder ! h264parse ─┐
+///                                                                           mp4mux ! filesink
+/// audio tee ! queue ! audioconvert ! avenc_aac ! aacparse ─────────────────┘
 /// ```
+///
+/// `videoconvert` passes I420 through for encoders that take it (x264, VideoToolbox) and
+/// converts for those that don't (`mfh264enc` takes only NV12).
 ///
 /// Queues are not leaky: files never drop data. `mp4mux` writes 1 s fragments while
 /// recording and rewrites them into a regular MP4 on EOS, so a file cut off by a crash
@@ -755,7 +758,8 @@ pub fn add_output_branch(
         rate.set_property("max-rate", framerate);
         let parse = make_tagged_element("h264parse", scope, "vparse")?;
         parse.set_property("config-interval", -1i32);
-        let chain = vec![file_queue(scope, "vq")?, rate, encoder, parse];
+        let convert = make_tagged_element("videoconvert", scope, "vconv")?;
+        let chain = vec![file_queue(scope, "vq")?, rate, convert, encoder, parse];
         tee_pads.push(add_mux_input(pipeline, tee, &chain, &mux, "video_%u")?);
         elements.extend(chain);
     }

@@ -1,0 +1,64 @@
+# On every push to main, builds the macOS and Windows apps (macos.yml,
+# windows.yml) and replaces the rolling 'nightly' pre-release with them:
+#   syncflow-publisher-<short sha>-aarch64.dmg
+#   syncflow-publisher-<short sha>-x86_64.dmg
+#   syncflow-publisher-<short sha>-x86_64-setup.exe
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Queue pushes rather than cancelling, so a release is never stopped halfway
+# through publishing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    uses: ./.github/workflows/macos.yml
+
+  windows:
+    uses: ./.github/workflows/windows.yml
+
+  nightly:
+    name: Publish nightly
+    needs: [macos, windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: syncflow-publisher-*
+          merge-multiple: true
+
+      - name: Check artifacts
+        run: |
+          ls -lh dist
+          count="$(find dist -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' \) | wc -l)"
+          if [ "${count}" -ne 3 ]; then
+            echo "::error::expected 2 DMGs and 1 installer, found ${count}"
+            exit 1
+          fi
+
+      # Recreate the release so it only lists this build's files, and move the
+      # tag to this commit.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short="${GITHUB_SHA::7}"
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/* \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "Nightly (${short})" \
+            --notes "Automated build of ${GITHUB_SHA} on main ($(date -u +%Y-%m-%d)). Unsigned: macOS needs right-click > Open on first launch, Windows SmartScreen needs More info > Run anyway."
