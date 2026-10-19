@@ -1,0 +1,130 @@
+# Builds the Windows app with the vendored GStreamer runtime bundled
+# (scripts/gstreamer/fetch-windows.ps1) and produces an NSIS installer:
+#   syncflow-publisher-<short sha>-x86_64-setup.exe
+# Every run uploads it as a workflow artifact. release.yml calls this on
+# pushes to main and publishes the result on the 'nightly' pre-release.
+name: Windows Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      # The fetch script's pinned version and checksum are the cache key.
+      - name: Cache GStreamer
+        uses: actions/cache@v4
+        with:
+          path: third_party/gstreamer/windows
+          key: gstreamer-windows-${{ hashFiles('scripts/gstreamer/fetch-windows.ps1') }}
+
+      - name: Fetch GStreamer
+        run: ./scripts/gstreamer/fetch-windows.ps1
+
+      # GStreamer's pkg-config, ahead of any other copy on the runner.
+      - name: Add GStreamer to PATH
+        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ github.workspace }}\third_party\gstreamer\sdk\bin"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: syncflow-publisher/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: syncflow-publisher
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Runs the frontend build (beforeBuildCommand), compiles the release
+      # binary, copies the GStreamer bundle next to it and creates the
+      # installer.
+      - name: Build app
+        working-directory: syncflow-publisher
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles nsis
+
+      # The app must load GStreamer and its plugins from its own folder, never
+      # from a system install.
+      - name: Check bundle
+        run: |
+          $release = "target/${{ matrix.target }}/release"
+          $status = 0
+          foreach ($file in 'gstreamer-1.0-0.dll', 'gst-plugin-scanner.exe', 'vcruntime140.dll', 'lib/gstreamer-1.0/gstcoreelements.dll') {
+            if (-not (Test-Path "$release/$file")) {
+              Write-Output "::error::$file is missing next to the app"
+              $status = 1
+            }
+          }
+          # Load the bundled runtime alone, as the installed app does, and
+          # check the elements the pipeline relies on on Windows.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:GST_PLUGIN_SYSTEM_PATH = (Resolve-Path "$release/lib/gstreamer-1.0").Path
+          $env:GST_PLUGIN_SCANNER = (Resolve-Path "$release/gst-plugin-scanner.exe").Path
+          $env:GIO_EXTRA_MODULES = (Resolve-Path "$release/lib/gio/modules").Path
+          $env:GST_REGISTRY = "$env:RUNNER_TEMP/gst-registry.bin"
+          Copy-Item third_party/gstreamer/sdk/bin/gst-inspect-1.0.exe $release
+          foreach ($element in 'wasapi2src', 'mfvideosrc', 'dx9screencapsrc', 'mfh264enc', 'x264enc', 'avenc_aac', 'mp4mux', 'audiornnoise', 'appsink') {
+            & "$release/gst-inspect-1.0.exe" --exists $element
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "::error::the bundled GStreamer has no $element"
+              $status = 1
+            }
+          }
+          # Every shipped plugin and GIO module must load (a missing dependency
+          # DLL shows up here as "Failed to load").
+          $scan = & "$release/gst-inspect-1.0.exe" 2>&1 | Out-String
+          $failures = $scan -split "`n" | Select-String 'Failed to load'
+          if ($failures) {
+            $failures | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            $status = 1
+          }
+          $size = (Get-ChildItem $release -Recurse -File -Include *.dll, *.exe | Measure-Object Length -Sum).Sum / 1MB
+          Write-Output ("App folder: {0:N0} MB" -f $size)
+          exit $status
+
+      - name: Rename installer
+        id: installer
+        run: |
+          $installers = @(Get-ChildItem "target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe")
+          if ($installers.Count -ne 1) {
+            Write-Output "::error::expected exactly one installer, found: $($installers.Name -join ', ')"
+            exit 1
+          }
+          $name = "syncflow-publisher-$("${{ github.sha }}".Substring(0, 7))-${{ matrix.arch }}-setup.exe"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Move-Item $installers[0].FullName "dist/$name"
+          Write-Output ("{0:N0} MB dist/$name" -f ((Get-Item "dist/$name").Length / 1MB))
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "name=$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.installer.outputs.name }}
+          path: dist/${{ steps.installer.outputs.name }}
+          if-no-files-found: error
+          retention-days: 30
