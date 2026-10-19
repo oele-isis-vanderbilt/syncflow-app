@@ -20,9 +20,13 @@ Works in two modes:
 .
 ├── Cargo.toml                 # workspace: livekit-gstreamer, syncflow-publisher/src-tauri
 ├── Cargo.lock                 # single lockfile for both crates
-├── .cargo/config.toml         # per-target rustflags (static CRT on Windows, -ObjC on Apple)
+├── .cargo/config.toml         # per-target rustflags (static CRT on Windows, -ObjC on Apple), PKG_CONFIG_PATH
+├── .github/workflows/         # macos.yml, windows.yml (reusable builds), release.yml (nightly on push to main)
+├── scripts/gstreamer/         # fetch-macos.sh, fetch-windows.ps1: vendor the pinned GStreamer
+├── third_party/gstreamer/     # vendored GStreamer (gitignored, created by the fetch scripts)
 ├── livekit-gstreamer/
 │   ├── src/
+│   │   ├── runtime.rs         # points GStreamer at the runtime the process loaded (bundled or vendored)
 │   │   ├── devices/           # per-OS device discovery (linux.rs, mac.rs, win.rs) behind one API in mod.rs
 │   │   ├── composite/         # the pipeline: spec (validation), builder (graph layers), bus (error
 │   │   │                      #   isolation), stream (CompositeStream), manifest, ids/tags/naming
@@ -78,7 +82,17 @@ cargo test --workspace   # composite pipeline tests run on live test sources (te
 ```
 
 ### livekit-gstreamer
-Assumes GStreamer and its development files are already installed on the system. Packaging GStreamer is planned; don't try to bundle or vendor it unless asked. Required: GStreamer Full Installation. Uses tokio and the LiveKit Rust SDK to provide streaming/recording capabilities as tasks.
+Uses tokio and the LiveKit Rust SDK to provide streaming/recording capabilities as tasks. GStreamer comes from the vendored copy (below) on macOS and Windows, and from a system install (with development files) on Linux.
+
+### Packaging GStreamer
+GStreamer 1.28 (gstreamer-rs 0.24, feature `v1_28`) is vendored, not installed. Rules for this area: `.claude/rules/packaging.md`.
+
+- `scripts/gstreamer/fetch-macos.sh` / `fetch-windows.ps1` download the pinned official binaries (checksum-verified) into `third_party/gstreamer/`. `third_party/gstreamer/sdk` points at the platform's runtime root: a symlink on macOS, a directory junction on Windows. `sdk/lib/pkgconfig-cargo` is what `.cargo/config.toml` exposes to cargo.
+- macOS: Tauri copies `GStreamer.framework` into `Contents/Frameworks` (`tauri.conf.json`), and `build.rs` adds the rpaths.
+- Windows: the fetch script stages `third_party/gstreamer/windows/bundle/`, which holds the DLLs, `gst-plugin-scanner.exe` and the MSVC runtime at the top, with plugins in `lib\gstreamer-1.0`. `tauri.windows.conf.json` installs it next to the exe (NSIS, per-user).
+- `livekit_gstreamer::initialize_gstreamer()` runs `runtime::configure()` before `gst::init` so plugins load only from the runtime that was actually loaded. Use it instead of `gstreamer::init()`.
+- Windows dev setup: run `.\scripts\gstreamer\fetch-windows.ps1`, then for `cargo test` and the examples put the DLLs on PATH: `$env:PATH = "$PWD\third_party\gstreamer\sdk\bin;$env:PATH"`. `pnpm tauri dev` needs no PATH change because Tauri copies the bundle next to the dev exe.
+- CI: `release.yml` runs on every push to main. It calls `macos.yml` and `windows.yml` and replaces the `nightly` pre-release with the DMGs and the setup.exe. The builds are unsigned (ad-hoc on macOS).
 
 Examples: `cargo run -p livekit-gstreamer --example get_devices` lists device ids and formats; put the ones to use in `.env` (quote values with spaces) for `stream_composite`. The LiveKit examples also need `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` there.
 
@@ -111,7 +125,7 @@ Vite config is `vite.config.js` (Tauri dev server on port 1420).
 Commands (run from `./syncflow-publisher`):
 ```sh
 pnpm tauri dev     # starts the SyncFlow App in local development mode, watches for local changes
-pnpm tauri build   # builds installers for the current platform
+pnpm tauri build   # builds installers for the current platform (fetch GStreamer first)
 pnpm check         # typecheck
 pnpm check:design  # design-token checker (also runs as a PostToolUse hook)
 pnpm format        # Prettier formatting
