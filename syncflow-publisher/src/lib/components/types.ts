@@ -114,7 +114,8 @@ export interface NewSessionMessage {
 export type PublicationNotification =
     | PublicationNotificationFailure
     | PublicationNotificationStreamingSuccess
-    | PublicationNotificationUploadProgress
+    | FileUploadProgress
+    | UploadFinished
     | SessionEnded
     | DeviceFailure
     | OutputFailure
@@ -183,11 +184,50 @@ export interface PublicationNotificationStreamingSuccess {
     devices: string[];
 }
 
-export interface PublicationNotificationUploadProgress {
-    kind: 'uploadProgress';
+export type FileUploadStatus = 'pending' | 'uploading' | 'done' | 'failed';
+
+/** One file of a join's upload changed status or sent a part. */
+export interface FileUploadProgress {
+    kind: 'fileUploadProgress';
     sessionId: string;
-    progress: number;
+    /** 1 for the first join of the session, 2 for the next, … */
+    join: number;
+    file: string;
+    uploadedBytes: number;
+    totalBytes: number;
+    status: FileUploadStatus;
+    error: string | null;
 }
+
+/** A join's upload stopped: everything is in S3 (`complete`), or `failed` files remain. */
+export interface UploadFinished {
+    kind: 'uploadFinished';
+    sessionId: string;
+    join: number;
+    complete: boolean;
+    failed: string[];
+}
+
+/** A join with an unfinished upload, from `get_pending_uploads` (`upload-state.json`). */
+export interface PendingUpload {
+    sessionId: string;
+    sessionName: string;
+    join: number;
+    bucket: string;
+    prefix: string;
+    files: Record<string, { size: number; status: FileUploadStatus; error: string | null }>;
+}
+
+/** What the UI knows about one file of a join's upload. */
+export interface FileUpload {
+    uploadedBytes: number;
+    totalBytes: number;
+    status: FileUploadStatus;
+    error: string | null;
+}
+
+/** Uploads by session id, then join number, then file name. */
+export type Uploads = Record<string, Record<number, Record<string, FileUpload>>>;
 
 export interface SessionEnded {
     kind: 'sessionEnded';

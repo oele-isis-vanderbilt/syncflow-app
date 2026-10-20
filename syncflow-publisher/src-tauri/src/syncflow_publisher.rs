@@ -3,10 +3,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::SyncFlowPublisherError,
-    models::{CompositeConfig, RecordingMode},
+    models::{AppState, CompositeConfig, RecordingMode},
     pipeline_events::{spawn_event_forwarder, DeviceDetails, EventContext},
-    s3_uploader::upload_to_s3,
-    utils::{recording_folder_name, short_session_id, unique_recording_dir},
+    s3_uploader::{upload_join, FileStatus, UploadEvent, UploadState},
+    utils::{claim_join_dir, session_folder_name},
 };
 use livekit::{Room, RoomOptions};
 use livekit_gstreamer::composite::{
@@ -19,7 +19,7 @@ use syncflow_shared::{
     device_models::NewSessionMessage,
     livekit_models::{TokenRequest, TokenResponse, VideoGrantsWrapper},
 };
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::{broadcast, mpsc::channel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +27,10 @@ use tokio::sync::{broadcast, mpsc::channel};
 pub enum PublicationNotification {
     Failure(FailureData),
     StreamingSuccess(StreamingSuccessData),
-    UploadProgress(UploadProgressData),
+    /// One file of a join's upload changed status or sent a part.
+    FileUploadProgress(FileUploadProgressData),
+    /// A join's upload stopped: everything is in S3, or some files failed.
+    UploadFinished(UploadFinishedData),
     SessionEnded(SessionEndedData),
     /// A device failed; what it fed was finalized or closed.
     DeviceFailure(DeviceFailureData),
@@ -56,9 +59,23 @@ pub struct StreamingSuccessData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UploadProgressData {
+pub struct FileUploadProgressData {
     pub session_id: String,
-    pub progress: f32,
+    pub join: u32,
+    pub file: String,
+    pub uploaded_bytes: u64,
+    pub total_bytes: u64,
+    pub status: FileStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadFinishedData {
+    pub session_id: String,
+    pub join: u32,
+    pub complete: bool,
+    pub failed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,28 +163,38 @@ async fn generate_session_token(
     Ok(token_response)
 }
 
-/// Builds and starts the composite pipeline for one recording in a new, readably named
-/// folder under `out_dir`. Returns the stream, its folder, and an events receiver taken
-/// before start (so it also sees devices that failed to open).
+/// A started recording: one join of a session.
+struct Recording {
+    stream: CompositeStream,
+    /// `<out_dir>/<session folder>/<join>`.
+    dir: PathBuf,
+    join: u32,
+    /// Taken before start, so it also sees devices that failed to open.
+    events: broadcast::Receiver<CompositeEvent>,
+}
+
+/// Builds and starts the composite pipeline for one join of a session, in the next
+/// numbered folder (`1`, `2`, …) of the session's folder under `out_dir`. The join
+/// number is added to the manifest context.
 async fn start_recording(
     config: &CompositeConfig,
     out_dir: &std::path::Path,
-    folder: &str,
-    manifest_context: serde_json::Value,
-) -> Result<
-    (
-        CompositeStream,
-        PathBuf,
-        broadcast::Receiver<CompositeEvent>,
-    ),
-    SyncFlowPublisherError,
-> {
-    let output_dir = unique_recording_dir(out_dir, folder);
-    let mut stream =
-        CompositeStream::new(config.to_stream_spec(output_dir.clone(), manifest_context));
+    session_name: &str,
+    session_id: &str,
+    mut manifest_context: serde_json::Value,
+) -> Result<Recording, SyncFlowPublisherError> {
+    let session_dir = out_dir.join(session_folder_name(session_name, session_id));
+    let (join, dir) = claim_join_dir(&session_dir)?;
+    manifest_context["join"] = join.into();
+    let mut stream = CompositeStream::new(config.to_stream_spec(dir.clone(), manifest_context));
     let events = stream.events();
     stream.start().await?;
-    Ok((stream, output_dir, events))
+    Ok(Recording {
+        stream,
+        dir,
+        join,
+        events,
+    })
 }
 
 /// Labels of the files being written, e.g. `mic-3 (mic-3_UMC1820-ch3.m4a)`.
@@ -202,34 +229,91 @@ fn any_finalized(manifest: &RecordingManifest) -> bool {
         .any(|o| o.status == OutputStatus::Finalized)
 }
 
-/// Zips `output_dir` next to itself and uploads it under `key` (`.zip` is appended),
-/// reporting progress and failures to the UI.
-async fn upload_recording(
+/// Marks a join folder as uploading in `AppState::uploads_in_progress` until dropped.
+struct UploadGuard {
+    app: tauri::AppHandle,
+    dir: PathBuf,
+}
+
+impl UploadGuard {
+    fn claim(app: &tauri::AppHandle, dir: &std::path::Path) -> Option<Self> {
+        let state = app.state::<AppState>();
+        let mut uploading = state.uploads_in_progress.lock().unwrap();
+        uploading.insert(dir.to_path_buf()).then(|| Self {
+            app: app.clone(),
+            dir: dir.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for UploadGuard {
+    fn drop(&mut self) {
+        let state = self.app.state::<AppState>();
+        state.uploads_in_progress.lock().unwrap().remove(&self.dir);
+    }
+}
+
+/// Uploads the join folder `dir` file by file to `state.prefix`, reporting each file's
+/// progress and the outcome to the UI. Also used to retry a failed upload: files already
+/// uploaded are skipped.
+pub async fn upload_recording(
     app: &tauri::AppHandle,
-    session_id: &str,
-    output_dir: PathBuf,
-    bucket_name: String,
-    key: String,
+    dir: PathBuf,
+    state: UploadState,
     s3_client: rusoto_s3::S3Client,
 ) {
-    let (tx, mut rx) = channel::<f32>(100);
-    let failure_app = app.clone();
-    let failure_session = session_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        let result = upload_to_s3(&output_dir, &bucket_name, &key, &s3_client, Some(tx)).await;
-        if let Err(e) = result {
-            notify_failure(&failure_app, &failure_session, e);
-        }
-    });
-    while let Some(progress) = rx.recv().await {
-        notify(
+    let session_id = state.session_id.clone();
+    let join = state.join;
+    let Some(_guard) = UploadGuard::claim(app, &dir) else {
+        return notify_failure(
             app,
-            PublicationNotification::UploadProgress(UploadProgressData {
-                progress,
-                session_id: session_id.to_string(),
-            }),
+            &session_id,
+            format!("Join {join} is already uploading"),
         );
-    }
+    };
+    let (tx, mut rx) = channel::<UploadEvent>(100);
+    let forward = async {
+        while let Some(event) = rx.recv().await {
+            notify(
+                app,
+                PublicationNotification::FileUploadProgress(FileUploadProgressData {
+                    session_id: session_id.clone(),
+                    join,
+                    file: event.file,
+                    uploaded_bytes: event.uploaded_bytes,
+                    total_bytes: event.total_bytes,
+                    status: event.status,
+                    error: event.error,
+                }),
+            );
+        }
+    };
+    let (result, ()) = tokio::join!(upload_join(&dir, state, &s3_client, Some(tx)), forward);
+    let (complete, failed) = match result {
+        Ok(state) => (
+            state.is_complete(),
+            state
+                .files
+                .iter()
+                .filter(|(_, f)| f.status == FileStatus::Failed)
+                .map(|(name, _)| name.clone())
+                .collect(),
+        ),
+        Err(e) => {
+            notify_failure(app, &session_id, e);
+            (false, Vec::new())
+        }
+    };
+    // Sent even after an error, so the UI knows this upload is no longer running.
+    notify(
+        app,
+        PublicationNotification::UploadFinished(UploadFinishedData {
+            session_id,
+            join,
+            complete,
+            failed,
+        }),
+    );
 }
 
 /// Records (and streams) one SyncFlow session until it is cancelled or the room
@@ -272,22 +356,21 @@ pub async fn record_publish_to_syncflow_with_cancellation(
         };
     let room = Arc::new(room);
 
-    let folder = recording_folder_name(
-        chrono::Local::now(),
-        &session_name,
-        &short_session_id(&session_id),
-    );
     let context = serde_json::json!({
         "session": { "id": session_id, "name": session_name },
         "participant": { "identity": participant_name, "name": participant_name },
         "recordingMode": RecordingMode::SessionMode,
         "appVersion": env!("CARGO_PKG_VERSION"),
     });
-    let (mut stream, output_dir, forwarder_events) =
-        match start_recording(&config, out_dir, &folder, context).await {
-            Ok(started) => started,
-            Err(e) => return notify_failure(app, &session_id, e),
-        };
+    let Recording {
+        mut stream,
+        dir,
+        join,
+        events: forwarder_events,
+    } = match start_recording(&config, out_dir, &session_name, &session_id, context).await {
+        Ok(started) => started,
+        Err(e) => return notify_failure(app, &session_id, e),
+    };
     let mut stop_events = stream.events();
     spawn_event_forwarder(
         forwarder_events,
@@ -359,15 +442,17 @@ pub async fn record_publish_to_syncflow_with_cancellation(
         Ok(project) => project,
         Err(e) => return notify_failure(app, &session_id, e),
     };
-    // The S3 key format is relied on downstream; keep it unchanged.
-    let key = format!(
-        "{}-{}/{}/local-recordings/{}",
+    // Downstream analysis reads this layout: `<prefix>/<join>/<file>`, with
+    // `manifest.json` uploaded last. Ask before changing it.
+    let prefix = format!(
+        "{}-{}/{}/local-recordings/{}/{join}",
         project.name,
         project.id,
         session_name,
         participant_name.replace(" ", "-").replace(".", "-"),
     );
-    upload_recording(app, &session_id, output_dir, bucket_name, key, s3_client).await;
+    let state = UploadState::new(&session_id, &session_name, join, &bucket_name, &prefix);
+    upload_recording(app, dir, state, s3_client).await;
 }
 
 /// Records locally until cancelled, then uploads the recording if S3 is configured and
@@ -386,18 +471,21 @@ pub async fn local_recording_only(
     let app = &event_emitter;
     let participant_name = "local-recorder";
 
-    let folder = recording_folder_name(chrono::Local::now(), &session_name, "local");
     let context = serde_json::json!({
         "session": { "id": session_id, "name": session_name },
         "participant": { "identity": participant_name, "name": participant_name },
         "recordingMode": RecordingMode::LocalMode,
         "appVersion": env!("CARGO_PKG_VERSION"),
     });
-    let (mut stream, output_dir, forwarder_events) =
-        match start_recording(&config, out_dir, &folder, context).await {
-            Ok(started) => started,
-            Err(e) => return notify_failure(app, &session_id, e),
-        };
+    let Recording {
+        mut stream,
+        dir,
+        join,
+        events: forwarder_events,
+    } = match start_recording(&config, out_dir, &session_name, &session_id, context).await {
+        Ok(started) => started,
+        Err(e) => return notify_failure(app, &session_id, e),
+    };
     let mut stop_events = stream.events();
     spawn_event_forwarder(
         forwarder_events,
@@ -439,14 +527,16 @@ pub async fn local_recording_only(
 
     if let (Some(s3_client), Some(bucket_name)) = (s3_client, bucket_name) {
         if config.streams_anything() && manifest.as_ref().is_some_and(any_finalized) {
-            // The S3 key format is relied on downstream; keep it unchanged.
-            let key = format!(
-                "recordings/{}-{}-{}.zip",
+            // Downstream analysis reads this layout: `<prefix>/<join>/<file>`, with
+            // `manifest.json` uploaded last. Ask before changing it.
+            let prefix = format!(
+                "recordings/{}-{}-{}/{join}",
                 session_id,
                 session_name.replace(" ", "-"),
                 participant_name
             );
-            upload_recording(app, &session_id, output_dir, bucket_name, key, s3_client).await;
+            let state = UploadState::new(&session_id, &session_name, join, &bucket_name, &prefix);
+            upload_recording(app, dir, state, s3_client).await;
         }
     }
 

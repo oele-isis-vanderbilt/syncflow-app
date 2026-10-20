@@ -4,9 +4,9 @@ use livekit_gstreamer::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicU64, Arc, Mutex},
 };
 use syncflow_client::ProjectClient;
 use tokio::sync::Mutex as AsyncMutex;
@@ -165,6 +165,9 @@ pub struct ActiveSession {
     pub session_id: String,
     pub session_name: String,
     pub cancel_token: CancellationToken,
+    /// Tells apart two runs of the same session (join, exit, join), so a finished run
+    /// only removes its own entry. 0 for entries no task cleans up.
+    pub run_id: u64,
 }
 
 pub struct AppState {
@@ -176,6 +179,9 @@ pub struct AppState {
     pub active_sessions: Arc<AsyncMutex<HashMap<String, ActiveSession>>>,
     pub currently_joined_session: Arc<AsyncMutex<Option<String>>>,
     pub local_recording_session: Arc<AsyncMutex<Option<ActiveSession>>>,
+    pub next_run_id: AtomicU64,
+    /// Join folders being uploaded, so a retry can't run alongside the upload it repeats.
+    pub uploads_in_progress: Mutex<HashSet<PathBuf>>,
 }
 
 #[cfg(test)]

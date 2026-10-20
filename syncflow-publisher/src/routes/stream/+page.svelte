@@ -1,19 +1,12 @@
 <script lang="ts">
     import CompositeSummary from '#lib/components/CompositeSummary.svelte';
     import SessionStatus, { type Status } from '#lib/components/SessionStatus.svelte';
+    import UploadProgress from '#lib/components/UploadProgress.svelte';
     import ConfirmModal from '#lib/components/ui/ConfirmModal.svelte';
     import SectionCard from '#lib/components/ui/SectionCard.svelte';
+    import { Accordion, AccordionItem, Alert, Button, Heading, P, Spinner } from 'flowbite-svelte';
     import {
-        Accordion,
-        AccordionItem,
-        Alert,
-        Button,
-        Heading,
-        P,
-        Progressbar,
-        Spinner,
-    } from 'flowbite-svelte';
-    import {
+        CloudArrowUpOutline,
         CogOutline,
         ExclamationCircleOutline,
         ListOutline,
@@ -28,8 +21,10 @@
     import { listen } from '@tauri-apps/api/event';
     import type {
         NewSessionMessage,
+        PendingUpload,
         PublicationNotification,
         PublicationNotificationStreamingSuccess,
+        Uploads,
     } from '#lib/components/types.js';
     import { counts, draftFromConfig } from '#lib/compositeConfig.js';
     import { describeProblem, type Problem } from '#lib/notifications.js';
@@ -44,6 +39,37 @@
     let publicationNotifications = $state<PublicationNotification[]>([]);
     let allSessions = $state<Array<[string, string, boolean]>>([]);
     let currentlyJoinedSession = $state<string | null>(null);
+
+    // Upload progress by session, join and file. Kept apart from publicationNotifications:
+    // every part of every file sends an event.
+    let uploads = $state<Uploads>({});
+    // `${sessionId}/${join}` of uploads still running.
+    let uploadsRunning = $state<Record<string, boolean>>({});
+    // Names of sessions known only from an unfinished upload on disk.
+    let pendingSessionNames = $state<Record<string, string>>({});
+
+    // Unfinished uploads from earlier runs, so they can be retried after a restart.
+    invoke<PendingUpload[]>('get_pending_uploads')
+        .then((pending) => {
+            for (const p of pending) {
+                const joins = (uploads[p.sessionId] ??= {});
+                joins[p.join] ??= Object.fromEntries(
+                    Object.entries(p.files).map(([name, f]) => [
+                        name,
+                        {
+                            uploadedBytes: f.status === 'done' ? f.size : 0,
+                            totalBytes: f.size,
+                            status: f.status === 'uploading' ? 'pending' : f.status,
+                            error: f.error,
+                        },
+                    ])
+                );
+                pendingSessionNames[p.sessionId] = p.sessionName;
+            }
+        })
+        .catch((error) => {
+            actionError = `Failed to load unfinished uploads: ${describe(error)}`;
+        });
 
     // Local recording mode state
     let isLocalRecording = $state<boolean>(false);
@@ -104,6 +130,22 @@
 
     listen<PublicationNotification>('publication-notification', (event) => {
         const notification = event.payload as PublicationNotification;
+        if (notification.kind === 'fileUploadProgress') {
+            const { sessionId, join, file, uploadedBytes, totalBytes, status, error } =
+                notification;
+            ((uploads[sessionId] ??= {})[join] ??= {})[file] = {
+                uploadedBytes,
+                totalBytes,
+                status,
+                error,
+            };
+            uploadsRunning[`${sessionId}/${join}`] = true;
+            return;
+        }
+        if (notification.kind === 'uploadFinished') {
+            uploadsRunning[`${notification.sessionId}/${notification.join}`] = false;
+            return;
+        }
         publicationNotifications.push(notification);
         publicationNotifications = [...publicationNotifications];
 
@@ -181,15 +223,20 @@
         );
     });
 
-    let uploadProgress: Record<string, number> = $derived.by(() => {
-        const progressMap: Record<string, number> = {};
-        publicationNotifications
-            .filter((notification) => notification.kind === 'uploadProgress')
-            .forEach((notification) => {
-                progressMap[notification.sessionId] = notification.progress;
-            });
-        return progressMap;
-    });
+    // Sessions with uploads that aren't listed as a session on this page.
+    let otherUploadSessions = $derived(
+        Object.keys(uploads).filter((id) => !sessionMessages.some((m) => m.sessionId === id))
+    );
+
+    async function retryUpload(sessionId: string, join: number) {
+        actionError = null;
+        try {
+            await invoke('retry_upload', { sessionId, join });
+        } catch (error) {
+            console.error('Failed to retry upload:', error);
+            actionError = `Failed to retry upload: ${describe(error)}`;
+        }
+    }
 
     let endedSessions: Set<string> = $derived.by(() => {
         const endedSet: Set<string> = new Set();
@@ -323,6 +370,17 @@
     </Alert>
 {/snippet}
 
+{#snippet sessionUploads(sessionId: string)}
+    {#each Object.entries(uploads[sessionId] ?? {}) as [join, files] (join)}
+        <UploadProgress
+            join={Number(join)}
+            {files}
+            uploading={uploadsRunning[`${sessionId}/${join}`] ?? false}
+            onRetry={() => retryUpload(sessionId, Number(join))}
+        />
+    {/each}
+{/snippet}
+
 {#snippet sessionDetails(sessionId: string, detailsTitle: string)}
     <div class="space-y-4">
         {#each successes[sessionId] ?? [] as success}
@@ -341,15 +399,8 @@
         {#each problems[sessionId] ?? [] as problem}
             {@render problemAlert(problem)}
         {/each}
-        {#if uploadProgress[sessionId] !== undefined}
-            <Progressbar
-                progress={uploadProgress[sessionId]}
-                labelOutside="Upload progress"
-                color="primary"
-                size="h-4"
-            />
-        {/if}
-        {#if !successes[sessionId] && !problems[sessionId] && uploadProgress[sessionId] === undefined}
+        {@render sessionUploads(sessionId)}
+        {#if !successes[sessionId] && !problems[sessionId] && !uploads[sessionId]}
             <P class="text-sm text-gray-500">No messages yet.</P>
         {/if}
     </div>
@@ -520,6 +571,22 @@
             </Accordion>
         </SectionCard>
     {/if}
+{/if}
+
+{#if otherUploadSessions.length > 0}
+    <SectionCard title="Unfinished Uploads" icon={CloudArrowUpOutline}>
+        <div class="space-y-4">
+            {#each otherUploadSessions as sessionId (sessionId)}
+                <div class="space-y-2">
+                    <P class="truncate text-sm text-gray-900">
+                        {pendingSessionNames[sessionId] ?? sessionId}
+                        <span class="font-mono text-xs text-gray-500">{sessionId}</span>
+                    </P>
+                    {@render sessionUploads(sessionId)}
+                </div>
+            {/each}
+        </div>
+    </SectionCard>
 {/if}
 
 <ConfirmModal

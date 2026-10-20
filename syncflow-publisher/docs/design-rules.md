@@ -120,7 +120,7 @@ App-specific states (keep these consistent across screens):
 
     Ended is gray, not red: it's a normal outcome. Red is reserved for live recording and errors.
 
-- Upload progress: `Progressbar color="primary" size="h-4"` with `labelOutside="Upload progress"`.
+- Upload progress: `UploadProgress.svelte`, one per join: an overall `Progressbar color="primary" size="h-4"` with `labelOutside="Upload progress · join N"`, a `size="h-2"` bar with a text status per file, and a red `Alert` plus an `alternative` Retry upload button when files failed.
 - Long-running actions (registering, starting, joining a session, uploading) show a `Spinner` or `Progressbar` and disable the button that started them. For a spinner inside a filled button, use `<Spinner size="4" color="gray" class="me-2" />`.
 - Errors from Rust (`publication-notification` failures and failed `invoke` calls) show as an `Alert color="red"` with an `ExclamationCircleOutline` icon and the reason text, never only in the console. Don't call SvelteKit's `error()` from event handlers: it throws uncaught and shows nothing.
 
