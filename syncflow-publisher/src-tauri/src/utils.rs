@@ -26,80 +26,91 @@ pub fn load_json<T: serde::de::DeserializeOwned>(
 /// Session names in folder names are cut to this many characters.
 const SESSION_SLUG_LEN: usize = 40;
 
-/// A readable recording folder name, e.g. `2026-10-14_11-38_Lecture-3_8f3c1a`: the start
-/// time to the minute, the session name, and a short id (`local` for local recordings).
-pub fn recording_folder_name(
-    started_at: chrono::DateTime<chrono::Local>,
-    session_name: &str,
-    short_id: &str,
-) -> String {
+/// The folder that holds every join of one session, e.g.
+/// `Lecture-3_8f3c1a2b-77de-4c1e-9d1a-0b6c2f1e4a55`: the session name and the full
+/// session id, so every join of a session finds the same folder and no two sessions share one.
+pub fn session_folder_name(session_name: &str, session_id: &str) -> String {
     let name = livekit_gstreamer::composite::naming::slug(session_name, SESSION_SLUG_LEN);
     let name = if name.is_empty() { "session" } else { &name };
-    format!("{}_{name}_{short_id}", started_at.format("%Y-%m-%d_%H-%M"))
-}
-
-/// The first six letters and digits of a session id.
-pub fn short_session_id(session_id: &str) -> String {
-    session_id
+    let id: String = session_id
         .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(6)
-        .collect()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{name}_{id}")
 }
 
-/// `parent/folder`, or `parent/folder-2`, `-3`, … if it already exists, so a recording
-/// never lands in another recording's folder.
-pub fn unique_recording_dir(parent: &Path, folder: &str) -> PathBuf {
-    let candidate = parent.join(folder);
-    if !candidate.exists() {
-        return candidate;
+/// Creates the next numbered join folder (`1`, `2`, …) in `session_dir` and returns its
+/// number and path. Uses `create_dir`, so two joins never claim the same number.
+pub fn claim_join_dir(session_dir: &Path) -> std::io::Result<(u32, PathBuf)> {
+    std::fs::create_dir_all(session_dir)?;
+    let mut n = std::fs::read_dir(session_dir)?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    loop {
+        let dir = session_dir.join(n.to_string());
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok((n, dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
     }
-    (2..)
-        .map(|n| parent.join(format!("{folder}-{n}")))
-        .find(|dir| !dir.exists())
-        .unwrap_or(candidate)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
-    fn folder_names_are_readable() {
-        let at = chrono::Local
-            .with_ymd_and_hms(2026, 10, 14, 11, 38, 5)
-            .unwrap();
+    fn session_folder_names() {
         assert_eq!(
-            recording_folder_name(at, "Lecture 3", "8f3c1a"),
-            "2026-10-14_11-38_Lecture-3_8f3c1a"
+            session_folder_name("Lecture 3", "8f3c1a2b-77de-4c1e"),
+            "Lecture-3_8f3c1a2b-77de-4c1e"
         );
         assert_eq!(
-            recording_folder_name(at, "Lab test: Oct. 9 (group B)", "local"),
-            "2026-10-14_11-38_Lab-test-Oct-9-group-B_local"
+            session_folder_name("Lab test: Oct. 9 (group B)", "local-1760459882"),
+            "Lab-test-Oct-9-group-B_local-1760459882"
         );
-        assert_eq!(
-            recording_folder_name(at, "***", "local"),
-            "2026-10-14_11-38_session_local"
-        );
-        let long = recording_folder_name(at, &"a very long session name ".repeat(5), "local");
-        assert!(long.len() <= "2026-10-14_11-38__local".len() + SESSION_SLUG_LEN);
+        assert_eq!(session_folder_name("***", "a/b"), "session_a-b");
+        let long = session_folder_name(&"a very long session name ".repeat(5), "id");
+        assert!(long.len() <= SESSION_SLUG_LEN + "_id".len());
     }
 
     #[test]
-    fn short_ids() {
-        assert_eq!(short_session_id("8f3c1a2b-77de-4c1e"), "8f3c1a");
-        assert_eq!(short_session_id("local-1760459882"), "local1");
-    }
-
-    #[test]
-    fn existing_folders_get_a_suffix() {
-        let parent = std::env::temp_dir().join(format!("folder-test-{}", std::process::id()));
+    fn join_folders_are_numbered() {
+        let parent = std::env::temp_dir().join(format!("join-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
-        std::fs::create_dir_all(parent.join("rec")).unwrap();
-        std::fs::create_dir_all(parent.join("rec-2")).unwrap();
-        assert_eq!(unique_recording_dir(&parent, "rec"), parent.join("rec-3"));
-        assert_eq!(unique_recording_dir(&parent, "other"), parent.join("other"));
+        let session = parent.join("Lecture_abc");
+        assert_eq!(claim_join_dir(&session).unwrap(), (1, session.join("1")));
+        assert_eq!(claim_join_dir(&session).unwrap(), (2, session.join("2")));
+        // Gaps and stray entries don't matter: the next number is after the highest.
+        std::fs::create_dir(session.join("7")).unwrap();
+        std::fs::write(session.join("notes.txt"), "").unwrap();
+        assert_eq!(claim_join_dir(&session).unwrap().0, 8);
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn concurrent_claims_get_distinct_numbers() {
+        let parent = std::env::temp_dir().join(format!("join-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let session = parent.join("s");
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let session = session.clone();
+                std::thread::spawn(move || claim_join_dir(&session).unwrap().0)
+            })
+            .collect();
+        let mut numbers: Vec<u32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        numbers.sort();
+        assert_eq!(numbers, (1..=8).collect::<Vec<_>>());
         std::fs::remove_dir_all(parent).unwrap();
     }
 }

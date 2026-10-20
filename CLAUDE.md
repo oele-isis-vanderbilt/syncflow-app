@@ -48,7 +48,7 @@ Works in two modes:
         ├── session_listener.rs# RabbitMQ listener for session start/stop
         ├── syncflow_publisher.rs # per-session record/stream flow, output dirs, S3 upload trigger
         ├── pipeline_events.rs # pipeline events -> UI notifications and ROOM_EVENTS messages
-        ├── s3_uploader.rs     # zip + multipart upload (rusoto)
+        ├── s3_uploader.rs     # per-file parallel upload with retries, upload-state.json (rusoto)
         ├── devices.rs, models.rs, errors.rs, utils.rs
 ```
 
@@ -64,12 +64,12 @@ Everything lives in `~/.syncflow-publisher/`:
 - `credentials.json`: SyncFlow API key/secret and RabbitMQ password (plaintext).
 - `s3_credentials.json`: S3 access/secret key (plaintext).
 - `registration.json`, `recording_mode.json`, `composite_config.json` (the recording setup).
-- `recordings/<YYYY-MM-DD_HH-MM>_<session>_<short-id>/` (`-2`, `-3`… on collision): recordings and `manifest.json`, zipped next to the folder before upload. Offline sessions end in `_local` and use `local-<nanos>` as the session id.
+- `recordings/<session-slug>_<session-id>/<join>/`: one folder per session, one numbered folder per join (`1`, `2`, … for join, exit, join). Each holds the recordings, `manifest.json` and, once an upload starts, `upload-state.json` (per-file upload status, used to retry). Offline sessions use `local-<nanos>` as the session id and always have one join.
 
 Rules:
 - Never log, print, or emit the contents of the credential files, and never commit sample files with real values.
-- Don't delete recordings or zips in code without a confirmed successful upload. These are study data.
-- Don't change the recordings folder naming or the S3 key format (`<project>-<id>/<session>/local-recordings/<participant>.zip`) without asking. Downstream analysis depends on them.
+- Don't delete recordings in code without a confirmed successful upload (every file `done` in `upload-state.json`). These are study data.
+- Don't change the S3 key format without asking; downstream analysis depends on it. Each file goes to `<prefix>/<join>/<file>`, with `manifest.json` uploaded last, only after every other file, so its presence marks a complete join. Session mode: `<project>-<id>/<session>/local-recordings/<participant>/<join>/`. Offline: `recordings/<session-id>-<session>-local-recorder/<join>/`. The local folder layout isn't read downstream.
 
 ## Stack and commands
 

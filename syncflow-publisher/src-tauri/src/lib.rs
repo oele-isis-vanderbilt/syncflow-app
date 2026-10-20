@@ -10,9 +10,12 @@ mod syncflow_publisher;
 mod utils;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use livekit_gstreamer::utils::system_time_nanos;
@@ -32,10 +35,30 @@ use crate::{
     errors::SyncFlowPublisherError,
     models::{ActiveSession, S3Config},
     register::{get_credentials, get_device_details, RegistrationResponse},
+    s3_uploader::{saved_uploads, UploadState},
     session_listener::ClonableNewSessionMessage,
-    syncflow_publisher::{local_recording_only, record_publish_to_syncflow_with_cancellation},
+    syncflow_publisher::{
+        local_recording_only, record_publish_to_syncflow_with_cancellation, upload_recording,
+    },
     utils::load_json,
 };
+
+type ActiveSessions = AsyncMutex<HashMap<String, ActiveSession>>;
+
+/// Removes `session_id`'s entry if it still belongs to run `run_id`; a rejoin may have
+/// replaced it with a newer run that must stay cancellable.
+async fn remove_if_current(sessions: &ActiveSessions, session_id: &str, run_id: u64) {
+    let mut sessions = sessions.lock().await;
+    if sessions.get(session_id).is_some_and(|s| s.run_id == run_id) {
+        sessions.remove(session_id);
+    }
+}
+
+fn load_s3_client(app_dir: &std::path::Path) -> Option<(rusoto_s3::S3Client, String)> {
+    let config = load_json::<S3Config>(&app_dir.join("s3_credentials.json")).ok()?;
+    let bucket = config.s3_bucket.clone();
+    Some((rusoto_s3::S3Client::from(config), bucket))
+}
 
 fn create_app_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home_dir = dirs::home_dir().ok_or_else(|| {
@@ -124,28 +147,25 @@ async fn rejoin_session(
     if let (Some(devices_config), Some(registration_details), Some(project_client)) =
         (devices_and_streaming_config, registration, project_client)
     {
-        // Load S3 config if available
-        let s3_config_file = app_state.app_dir.join("s3_credentials.json");
-        let (s3_client, bucket_name): (Option<rusoto_s3::S3Client>, Option<String>) =
-            if s3_config_file.exists() {
-                match load_json::<S3Config>(&s3_config_file) {
-                    Ok(config) => {
-                        let bucket_name = config.s3_bucket.clone();
-                        let s3_client = rusoto_s3::S3Client::from(config);
-                        (Some(s3_client), Some(bucket_name))
-                    }
-                    Err(_) => (None, None),
-                }
-            } else {
-                (None, None)
-            };
+        let (s3_client, bucket_name) = load_s3_client(&app_state.app_dir).unzip();
 
         let recordings_dir = app_state.app_dir.join("recordings");
         let active_sessions = app_state.active_sessions.clone();
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();
         let session_id_clone = session_id.clone();
-        let session_name_clone = session_name.clone();
+        let run_id = app_state.next_run_id.fetch_add(1, Ordering::Relaxed);
+
+        // Registered before the task starts, so a task that ends at once still cleans up.
+        app_state.active_sessions.lock().await.insert(
+            session_id.clone(),
+            ActiveSession {
+                session_id: session_id.clone(),
+                session_name: session_name.clone(),
+                cancel_token,
+                run_id,
+            },
+        );
 
         let new_session = syncflow_shared::device_models::NewSessionMessage {
             session_id: session_id.clone(),
@@ -171,22 +191,8 @@ async fn rejoin_session(
             )
             .await;
 
-            // Remove from active sessions when task completes naturally
-            let mut active_sessions_guard = active_sessions.lock().await;
-            active_sessions_guard.remove(&session_id_clone);
+            remove_if_current(&active_sessions, &session_id_clone, run_id).await;
         });
-
-        // Add to active sessions
-        let mut active_sessions_guard = app_state.active_sessions.lock().await;
-        active_sessions_guard.insert(
-            session_id.clone(),
-            ActiveSession {
-                session_id: session_id.clone(),
-                session_name: session_name_clone,
-                cancel_token,
-            },
-        );
-        drop(active_sessions_guard);
 
         // Set as currently joined session
         let mut currently_joined = app_state.currently_joined_session.lock().await;
@@ -292,21 +298,7 @@ async fn start_local_recording(
         ));
     }
 
-    // Load S3 config if available
-    let s3_config_file = app_state.app_dir.join("s3_credentials.json");
-    let (s3_client, bucket_name): (Option<rusoto_s3::S3Client>, Option<String>) =
-        if s3_config_file.exists() {
-            match load_json::<S3Config>(&s3_config_file) {
-                Ok(config) => {
-                    let bucket_name = config.s3_bucket.clone();
-                    let s3_client = rusoto_s3::S3Client::from(config);
-                    (Some(s3_client), Some(bucket_name))
-                }
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
-        };
+    let (s3_client, bucket_name) = load_s3_client(&app_state.app_dir).unzip();
 
     let recordings_dir = app_state.app_dir.join("recordings");
     let cancel_token = CancellationToken::new();
@@ -333,6 +325,7 @@ async fn start_local_recording(
         session_id: session_id.clone(),
         session_name,
         cancel_token,
+        run_id: 0,
     };
 
     *local_recording_guard = Some(active_session);
@@ -412,6 +405,44 @@ fn get_recording_mode(
     }
 }
 
+/// Joins whose upload is unfinished (some files failed or never went up), oldest first.
+#[tauri::command]
+fn get_pending_uploads(
+    app_state: tauri::State<'_, models::AppState>,
+) -> Result<Vec<UploadState>, SyncFlowPublisherError> {
+    Ok(saved_uploads(&app_state.app_dir.join("recordings"))
+        .into_iter()
+        .map(|(_, state)| state)
+        .filter(|state| !state.is_complete())
+        .collect())
+}
+
+/// Uploads again whatever is missing from one join's upload. Progress arrives as
+/// `publication-notification` events, as for the first upload.
+#[tauri::command]
+fn retry_upload(
+    session_id: String,
+    join: u32,
+    app_state: tauri::State<'_, models::AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), SyncFlowPublisherError> {
+    let (dir, state) = saved_uploads(&app_state.app_dir.join("recordings"))
+        .into_iter()
+        .find(|(_, state)| state.session_id == session_id && state.join == join)
+        .ok_or_else(|| {
+            SyncFlowPublisherError::NotIntialized(format!(
+                "No upload found for join {join} of session {session_id}"
+            ))
+        })?;
+    let (s3_client, _) = load_s3_client(&app_state.app_dir).ok_or_else(|| {
+        SyncFlowPublisherError::ConfigError("S3 credentials are missing or invalid".into())
+    })?;
+    tauri::async_runtime::spawn(async move {
+        upload_recording(&app_handle, dir, state, s3_client).await;
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Sets GStreamer's plugin env vars, so it must run before Tauri starts threads.
@@ -487,6 +518,19 @@ pub fn run() {
                         let active_sessions_for_cleanup = active_sessions.clone();
                         let session_id_for_cleanup = session_id.clone();
                         let handle_for_task = handle.clone();
+                        let run_id = app_state.next_run_id.fetch_add(1, Ordering::Relaxed);
+
+                        // Registered before the task starts, so a task that ends at once
+                        // still cleans up.
+                        active_sessions.lock().await.insert(
+                            session_id.clone(),
+                            ActiveSession {
+                                session_id: session_id.clone(),
+                                session_name: session_name.clone(),
+                                cancel_token,
+                                run_id,
+                            },
+                        );
 
                         tauri::async_runtime::spawn(async move {
                             if let (
@@ -514,23 +558,13 @@ pub fn run() {
                                 .await;
                             }
 
-                            // Remove from active sessions when task completes naturally
-                            let mut active_sessions_guard =
-                                active_sessions_for_cleanup.lock().await;
-                            active_sessions_guard.remove(&session_id_for_cleanup);
+                            remove_if_current(
+                                &active_sessions_for_cleanup,
+                                &session_id_for_cleanup,
+                                run_id,
+                            )
+                            .await;
                         });
-
-                        // Add to active sessions immediately
-                        let mut active_sessions_guard = active_sessions.lock().await;
-                        active_sessions_guard.insert(
-                            session_id.clone(),
-                            ActiveSession {
-                                session_id: session_id.clone(),
-                                session_name: session_name.clone(),
-                                cancel_token,
-                            },
-                        );
-                        drop(active_sessions_guard);
 
                         // Set as currently joined session
                         let mut currently_joined = app_state.currently_joined_session.lock().await;
@@ -613,6 +647,7 @@ pub fn run() {
                             session_id: session.id.clone(),
                             session_name: session.name.clone(),
                             cancel_token: CancellationToken::new(),
+                            run_id: 0,
                         },
                     );
                 }
@@ -626,6 +661,8 @@ pub fn run() {
                     active_sessions: Arc::new(AsyncMutex::new(initial_active_sessions)),
                     currently_joined_session: Arc::new(AsyncMutex::new(None)),
                     local_recording_session: Arc::new(AsyncMutex::new(None)),
+                    next_run_id: AtomicU64::new(1),
+                    uploads_in_progress: Mutex::new(HashSet::new()),
                 };
                 app.manage(app_state);
             });
@@ -651,6 +688,8 @@ pub fn run() {
             set_recording_mode,
             get_recording_mode,
             get_pipeline_capabilities,
+            get_pending_uploads,
+            retry_upload,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
