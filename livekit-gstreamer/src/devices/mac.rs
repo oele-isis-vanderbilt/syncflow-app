@@ -189,18 +189,21 @@ pub fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
                         channels,
                         framerates: (framerate_fields.min(), framerate_fields.max()),
                         codec,
+                        exclusive: false,
                     })
                 } else if let Ok(framerate) = structure.get::<i32>("rate") {
                     MediaCapability::Audio(AudioCapability {
                         channels,
                         framerates: (framerate / 2, framerate),
                         codec: structure.name().to_string(),
+                        exclusive: false,
                     })
                 } else {
                     MediaCapability::Audio(AudioCapability {
                         channels,
                         framerates: (0, 0),
                         codec: "audio/x-raw".to_string(),
+                        exclusive: false,
                     })
                 }
             })

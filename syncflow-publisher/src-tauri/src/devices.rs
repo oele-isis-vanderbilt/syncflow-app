@@ -36,9 +36,12 @@ fn verify_device_exists_and_supports_codec(
     };
 
     let supports_codec = match option {
-        PublishOptions::Audio(details) => {
-            media_device.supports_audio(&details.codec, details.channels, details.framerate)
-        }
+        PublishOptions::Audio(details) => media_device.supports_audio(
+            &details.codec,
+            details.channels,
+            details.framerate,
+            details.exclusive,
+        ),
         PublishOptions::Video(details) => media_device.supports_video(
             &details.codec,
             details.width,

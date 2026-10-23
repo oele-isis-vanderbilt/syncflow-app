@@ -1,5 +1,6 @@
 use display_info::DisplayInfo;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use gstreamer::{prelude::*, Device, DeviceMonitor};
@@ -83,43 +84,118 @@ pub fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
             })
             .collect()
     } else {
-        #[allow(clippy::unnecessary_filter_map)]
-        caps.iter()
-            .filter_map(|structure| {
-                let channels = structure.get::<i32>("channels").unwrap_or(0);
-
-                let mut rates = vec![];
-                // Try to get a list of rates
-                if let Ok(rate_list) = structure.get::<gstreamer::List>("rate") {
-                    for val in rate_list.iter() {
-                        if let Ok(rate) = val.get::<i32>() {
-                            rates.push(rate);
-                        }
-                    }
-                } else if let Ok(rate) = structure.get::<i32>("rate") {
-                    rates.push(rate);
-                } else if let Ok(rate_range) = structure.get::<gstreamer::IntRange<i32>>("rate") {
-                    rates.push(rate_range.min());
-                    rates.push(rate_range.max());
-                }
-
-                let codec = structure.name().to_string();
-
-                Some(MediaCapability::Audio(AudioCapability {
-                    channels,
-                    framerates: if rates.is_empty() {
-                        (0, 0)
-                    } else {
-                        (
-                            *rates.iter().min().unwrap_or(&0),
-                            *rates.iter().max().unwrap_or(&0),
-                        )
-                    },
-                    codec,
-                }))
-            })
-            .collect()
+        let mut capabilities = audio_capabilities(&caps, false);
+        let exclusive = exclusive_capabilities(device)
+            .into_iter()
+            .filter(|native| !capabilities.iter().any(|shared| covers(shared, native)))
+            .collect::<Vec<_>>();
+        capabilities.extend(exclusive);
+        capabilities
     }
+}
+
+/// Audio capabilities of `caps`, one per structure.
+fn audio_capabilities(caps: &gstreamer::CapsRef, exclusive: bool) -> Vec<MediaCapability> {
+    caps.iter()
+        .map(|structure| {
+            let channels = structure.get::<i32>("channels").unwrap_or(0);
+
+            let mut rates = vec![];
+            // Try to get a list of rates
+            if let Ok(rate_list) = structure.get::<gstreamer::List>("rate") {
+                for val in rate_list.iter() {
+                    if let Ok(rate) = val.get::<i32>() {
+                        rates.push(rate);
+                    }
+                }
+            } else if let Ok(rate) = structure.get::<i32>("rate") {
+                rates.push(rate);
+            } else if let Ok(rate_range) = structure.get::<gstreamer::IntRange<i32>>("rate") {
+                rates.push(rate_range.min());
+                rates.push(rate_range.max());
+            }
+
+            MediaCapability::Audio(AudioCapability {
+                channels,
+                framerates: (
+                    rates.iter().copied().min().unwrap_or(0),
+                    rates.iter().copied().max().unwrap_or(0),
+                ),
+                codec: structure.name().to_string(),
+                exclusive,
+            })
+        })
+        .collect()
+}
+
+/// Whether the shared-mode capability `shared` already offers the format of `native`.
+fn covers(shared: &MediaCapability, native: &MediaCapability) -> bool {
+    match (shared, native) {
+        (MediaCapability::Audio(s), MediaCapability::Audio(n)) => {
+            s.codec == n.codec
+                && s.channels == n.channels
+                && s.framerates.0 <= n.framerates.0
+                && s.framerates.1 >= n.framerates.1
+        }
+        _ => false,
+    }
+}
+
+/// Exclusive-mode formats found so far, by device id. Probing opens the device, which
+/// fails while another app (or a running pipeline) holds it, so only successes are kept.
+static EXCLUSIVE_CAPABILITIES: Lazy<Mutex<HashMap<String, Vec<MediaCapability>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// The formats `device` offers in WASAPI exclusive mode: the device's own format (the
+/// Sound panel's "Default Format"), which can differ from the shared-mode mix format that
+/// the device monitor reports. For example, with Intel's USB audio offload a 48 kHz USB
+/// mic is mixed at 44.1 kHz. Empty for anything but `wasapi2` capture devices.
+fn exclusive_capabilities(device: &Device) -> Vec<MediaCapability> {
+    let Some(props) = device.properties() else {
+        return vec![];
+    };
+    if props.get::<String>("device.api").ok().as_deref() != Some("wasapi2")
+        || props
+            .get::<bool>("wasapi2.device.loopback")
+            .unwrap_or(false)
+    {
+        return vec![];
+    }
+    let Ok(id) = props.get::<String>("device.id") else {
+        return vec![];
+    };
+    if let Some(known) = EXCLUSIVE_CAPABILITIES.lock().unwrap().get(&id) {
+        return known.clone();
+    }
+    let Some(caps) = probe_exclusive_caps(device) else {
+        return vec![];
+    };
+    let capabilities = audio_capabilities(&caps, true);
+    EXCLUSIVE_CAPABILITIES
+        .lock()
+        .unwrap()
+        .insert(id, capabilities.clone());
+    capabilities
+}
+
+/// Opens `device` in exclusive mode and reads the caps its source then offers. Before the
+/// device is open the source reports only its template (any rate), which is rejected.
+fn probe_exclusive_caps(device: &Device) -> Option<gstreamer::Caps> {
+    let source = device.create_element(None).ok()?;
+    source.find_property("exclusive")?;
+    source.set_property("exclusive", true);
+    let caps = source
+        .set_state(gstreamer::State::Ready)
+        .ok()
+        .and_then(|_| source.static_pad("src"))
+        .map(|pad| pad.query_caps(None));
+    let _ = source.set_state(gstreamer::State::Null);
+    let caps = caps?;
+    let fixed_rates = !caps.is_empty()
+        && caps
+            .iter()
+            .all(|s| s.get::<i32>("rate").is_ok() && s.get::<i32>("channels").is_ok());
+    fixed_rates.then_some(caps)
 }
 
 fn get_device_path(device: &Device) -> Option<String> {

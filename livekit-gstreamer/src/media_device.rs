@@ -113,7 +113,13 @@ impl GstMediaDevice {
         })
     }
 
-    pub fn supports_audio(&self, codec: &str, channels: i32, framerate: i32) -> bool {
+    pub fn supports_audio(
+        &self,
+        codec: &str,
+        channels: i32,
+        framerate: i32,
+        exclusive: bool,
+    ) -> bool {
         let caps = self.capabilities();
         if self.device_class == "Video/Source" {
             return false;
@@ -129,6 +135,7 @@ impl GstMediaDevice {
         caps.iter().any(|c| {
             c.codec == codec
                 && c.channels == channels
+                && c.exclusive == exclusive
                 && c.framerates.0 <= framerate
                 && c.framerates.1 >= framerate
         })
@@ -255,6 +262,10 @@ pub struct AudioCapability {
     pub channels: i32,
     pub framerates: (i32, i32),
     pub codec: String,
+    /// Offered only when the device is opened in exclusive mode (Windows WASAPI): the
+    /// device's own format, which can differ from the shared-mode mix format.
+    #[serde(default)]
+    pub exclusive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

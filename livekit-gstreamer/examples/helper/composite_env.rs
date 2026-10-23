@@ -2,10 +2,11 @@
 //! any machine. Find device ids with `cargo run -p livekit-gstreamer --example get_devices`.
 //!
 //! - `CAMERA_ID` (+ `CAMERA_CODEC`, `CAMERA_WIDTH`, `CAMERA_HEIGHT`, `CAMERA_FPS`): AV mix camera
-//! - `MIC1_ID`, `MIC2_ID` (+ `MIC_RATE`, `MIC1_CHANNELS`, `MIC1_CHANNEL`, `MIC2_…`): AV mix mics,
-//!   recorded L/R
+//! - `MIC1_ID`, `MIC2_ID` (+ `MIC_RATE`, `MIC1_CHANNELS`, `MIC1_CHANNEL`, `MIC1_EXCLUSIVE`, `MIC2_…`):
+//!   AV mix mics, recorded L/R. `MIC1_EXCLUSIVE=true` opens the mic in exclusive mode
+//!   (Windows), at the device's own format; `get_devices` lists it with `exclusive: true`
 //! - `SCREEN_ID` (+ `SCREEN_WIDTH`, `SCREEN_HEIGHT`, `SCREEN_FPS`): optional screenshare
-//! - `EXTRA_CAMERA_ID`, `EXTRA_MIC_ID` (+ `EXTRA_MIC_CHANNELS`, `EXTRA_MIC_CHANNEL`): optional
+//! - `EXTRA_CAMERA_ID`, `EXTRA_MIC_ID` (+ `EXTRA_MIC_CHANNELS`, `EXTRA_MIC_CHANNEL`, `EXTRA_MIC_EXCLUSIVE`): optional
 //! - `STREAM_SCREEN`, `STREAM_EXTRA`: `true` to stream those too (the AV mix always streams)
 
 use livekit_gstreamer::composite::{AvMixSpec, CompositeStreamSpec, Output};
@@ -43,6 +44,7 @@ fn mic(prefix: &str, id: String) -> AudioPublishOptions {
         framerate: num("MIC_RATE", 48000),
         channels: num(&format!("{prefix}_CHANNELS"), 1),
         selected_channel: var(&format!("{prefix}_CHANNEL")).and_then(|v| v.parse().ok()),
+        exclusive: var(&format!("{prefix}_EXCLUSIVE")).is_some_and(|v| v == "1" || v == "true"),
     }
 }
 

@@ -211,6 +211,11 @@
     </div>
     {#if shared && !error}
         <Helper>Format set by {shared.by}, which uses the same interface.</Helper>
+    {:else if options && 'exclusive' in options && options.exclusive && !error}
+        <Helper>
+            Exclusive mode records at the mic's own format; other apps can't use it while
+            recording.
+        </Helper>
     {/if}
     {#if error}
         <Helper color="red">{error}</Helper>

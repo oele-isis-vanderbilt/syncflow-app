@@ -9,6 +9,8 @@ export interface AudioCapability {
     channels: number;
     framerates: [number, number];
     codec: string;
+    /** Only offered in exclusive mode (Windows): the device's own format. */
+    exclusive?: boolean;
 }
 
 export interface ScreenCapability {
@@ -60,6 +62,8 @@ export interface AudioPublishOptions {
     framerate: number;
     channels: number;
     selectedChannel?: number;
+    /** Open the device in exclusive mode (Windows); other apps can't use it meanwhile. */
+    exclusive?: boolean;
 }
 
 export interface ScreenPublishOptions {

@@ -159,12 +159,14 @@ pub fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
                         channels,
                         framerates: (framerate_fields.min(), framerate_fields.max()),
                         codec,
+                        exclusive: false,
                     })
                 } else {
                     MediaCapability::Audio(AudioCapability {
                         channels,
                         framerates: (0, 0),
                         codec: "audio/x-raw".to_string(),
+                        exclusive: false,
                     })
                 }
             })
