@@ -414,6 +414,7 @@ mod tests {
             framerate: 48000,
             channels: 1,
             selected_channel: None,
+            exclusive: false,
         }
     }
 

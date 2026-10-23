@@ -20,6 +20,10 @@ pub struct AudioPublishOptions {
     pub framerate: i32,
     pub channels: i32,
     pub selected_channel: Option<i32>,
+    /// Open the device in exclusive mode (Windows WASAPI) to capture at its own format
+    /// instead of the shared-mode mix format. Other apps can't use the device meanwhile.
+    #[serde(default)]
+    pub exclusive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

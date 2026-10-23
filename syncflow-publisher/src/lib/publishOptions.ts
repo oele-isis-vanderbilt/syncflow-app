@@ -61,10 +61,14 @@ export function audioFormats(device: MediaDeviceInfo): AudioPublishOptions[] {
             deviceId: device.devicePath,
             framerate,
             channels: c.channels,
+            ...(c.exclusive ? { exclusive: true } : {}),
         }));
     });
     return unique(formats, formatKey).sort(
-        (a, b) => b.framerate - a.framerate || a.channels - b.channels
+        (a, b) =>
+            b.framerate - a.framerate ||
+            a.channels - b.channels ||
+            Number(!!a.exclusive) - Number(!!b.exclusive)
     );
 }
 
@@ -96,7 +100,8 @@ export function defaultVideo(device: MediaDeviceInfo): VideoPublishOptions | nul
 
 /**
  * 48 kHz, mono for ordinary mics; every channel for multichannel interfaces, so a
- * channel can be picked.
+ * channel can be picked. Shared mode wins at the same rate; exclusive mode is picked when
+ * only it reaches 48 kHz (a mic Windows mixes at 44.1 kHz but runs at 48 kHz).
  */
 export function defaultAudio(device: MediaDeviceInfo): AudioPublishOptions | null {
     const formats = audioFormats(device);
@@ -124,7 +129,7 @@ export function formatKey(options: AnyOptions): string {
         return `${options.width}x${options.height}@${options.framerate}`;
     if ('width' in options)
         return `${options.codec}|${options.width}x${options.height}@${options.framerate}`;
-    return `${options.codec}|${options.framerate}|${options.channels}`;
+    return `${options.codec}|${options.framerate}|${options.channels}${options.exclusive ? '|exclusive' : ''}`;
 }
 
 const CODEC_LABEL: Record<string, string> = {
@@ -139,7 +144,7 @@ export function channelsLabel(channels: number): string {
     return `${channels} ch`;
 }
 
-/** e.g. `1280×720 · 30 fps · MJPEG`, `48 kHz · mono`, `1512×982 · 15 fps`. */
+/** e.g. `1280×720 · 30 fps · MJPEG`, `48 kHz · mono`, `48 kHz · mono · exclusive`. */
 export function formatLabel(options: AnyOptions): string {
     if ('screenIdOrName' in options)
         return `${options.width}×${options.height} · ${options.framerate} fps`;
@@ -148,7 +153,7 @@ export function formatLabel(options: AnyOptions): string {
         return `${options.width}×${options.height} · ${options.framerate} fps · ${codec}`;
     }
     const rate = options.framerate / 1000;
-    return `${rate} kHz · ${channelsLabel(options.channels)}`;
+    return `${rate} kHz · ${channelsLabel(options.channels)}${options.exclusive ? ' · exclusive' : ''}`;
 }
 
 /**

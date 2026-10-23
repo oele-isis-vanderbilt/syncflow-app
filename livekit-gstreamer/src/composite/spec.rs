@@ -569,6 +569,8 @@ fn audio_conflict(known: &AudioPublishOptions, new: &AudioPublishOptions) -> Opt
         Some(format!("rate {} vs {}", known.framerate, new.framerate))
     } else if known.channels != new.channels {
         Some(format!("channels {} vs {}", known.channels, new.channels))
+    } else if known.exclusive != new.exclusive {
+        Some("exclusive vs shared mode".to_string())
     } else {
         None
     }
@@ -667,6 +669,7 @@ mod tests {
             framerate: 48000,
             channels,
             selected_channel,
+            exclusive: false,
         }
     }
 
@@ -1003,6 +1006,19 @@ mod tests {
         assert!(matches!(
             rejects(CompositeStreamSpec {
                 mics: vec![out(mic("umc", 4, Some(1)), false), out(other_rate, false)],
+                ..recording()
+            }),
+            SpecError::ConflictingDeviceOptions { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_mixing_exclusive_and_shared_mode_on_one_device() {
+        let mut exclusive = mic("umc", 4, Some(2));
+        exclusive.exclusive = true;
+        assert!(matches!(
+            rejects(CompositeStreamSpec {
+                mics: vec![out(mic("umc", 4, Some(1)), false), out(exclusive, false)],
                 ..recording()
             }),
             SpecError::ConflictingDeviceOptions { .. }

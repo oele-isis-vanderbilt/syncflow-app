@@ -232,10 +232,25 @@ fn make_source(device: &ResolvedDevice) -> Result<Element, CompositeError> {
         )))
     };
     match device.device.kind {
-        DeviceKind::Camera | DeviceKind::Mic => get_gst_device(id)
-            .ok_or_else(not_found)?
-            .create_element(Some(&name))
-            .map_err(|e| pipeline_error(format!("failed to open {id}: {e}"))),
+        DeviceKind::Camera | DeviceKind::Mic => {
+            let source = get_gst_device(id)
+                .ok_or_else(not_found)?
+                .create_element(Some(&name))
+                .map_err(|e| pipeline_error(format!("failed to open {id}: {e}")))?;
+            if matches!(&device.options, DeviceOptions::Audio(o) if o.exclusive) {
+                if source.find_property("exclusive").is_none() {
+                    return Err(pipeline_error(format!(
+                        "{id}: exclusive mode is not supported by {}",
+                        source
+                            .factory()
+                            .map(|f| f.name().to_string())
+                            .unwrap_or_default()
+                    )));
+                }
+                source.set_property("exclusive", true);
+            }
+            Ok(source)
+        }
         DeviceKind::Screen => {
             let source = GstMediaDevice::from_screen_id_or_name(id)
                 .map_err(|_| not_found())?
@@ -1151,6 +1166,7 @@ mod tests {
             framerate: 48000,
             channels,
             selected_channel,
+            exclusive: false,
         }
     }
 
